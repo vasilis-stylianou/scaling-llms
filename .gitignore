@@ -1,0 +1,16 @@
+# Poetry venv
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Dirs to ignore
+data/
+runs/

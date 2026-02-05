@@ -1,0 +1,9 @@
+{
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalOperand": "none",
+    "reportGeneralTypeIssues": "warning",
+    "reportAttributeAccessIssue": "none",
+    "reportArgumentType": "none"
+  }
+}
