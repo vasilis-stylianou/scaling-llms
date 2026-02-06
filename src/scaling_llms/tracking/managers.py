@@ -13,7 +13,12 @@ from scaling_llms.tracking.trackers import (
     TensorBoardTracker,
 )
 from scaling_llms.tracking.constants import DIRS, METRICS
-from scaling_llms.utils.env import is_colab, DESKTOP_DRIVE_MOUNTPOINT, LOCAL_TIMEZONE
+from scaling_llms.utils.env import (
+    PROJECT_NAME,
+    DESKTOP_DRIVE_MOUNTPOINT, 
+    LOCAL_TIMEZONE, 
+    is_colab
+)
 import sqlite3
 from zoneinfo import ZoneInfo
 
@@ -23,9 +28,9 @@ from zoneinfo import ZoneInfo
 # -----------------------------
 @dataclass(frozen=True)
 class GoogleDriveDefaults:
-    drive_subdir: str = "scaling-llms"
+    drive_subdir: str = PROJECT_NAME
     desktop_mountpoint: str | Path = DESKTOP_DRIVE_MOUNTPOINT
-    colab_mountpoint: str | Path = "/content/drive"
+    colab_mountpoint: str | Path = "/content/drive" # recommended mount point in Colab
     drive_root_name: str | None = None
     db_name: str = "run_registry.db"
     artifact_subdir: str = "artifacts"

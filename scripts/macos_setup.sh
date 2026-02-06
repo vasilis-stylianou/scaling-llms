@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# macOS Intel / older wheels (CPU-only)
+# Purpose: bootstrap a reproducible local (macOS) dev environment by installing
+# Poetry dependencies, a NumPy version compatible with pinned PyTorch CPU wheels,
+# and then running a quick sanity check.
+
+# macOS Intel / older wheels (CPU-only) — pinned to versions known to work on MY macOS
 TORCH_DARWIN="2.2.2"
 TV_DARWIN="0.17.2"
 TA_DARWIN="2.2.2"

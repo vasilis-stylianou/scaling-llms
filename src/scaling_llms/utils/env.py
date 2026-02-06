@@ -4,9 +4,11 @@ import sys
 
 LOCAL_TIMEZONE = "Europe/Athens"
 DESKTOP_DRIVE_MOUNTPOINT = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com"
+PROJECT_NAME = "scaling-llms"
 REPO_URL = "https://github.com/vasilis-stylianou/scaling-llms.git"
 REPO_DIR = "scaling-llms"
 SRC_DIR = "src"
+
 
 def is_colab() -> bool:
     colab_env_vars = ("COLAB_GPU", "COLAB_TPU_ADDR")
