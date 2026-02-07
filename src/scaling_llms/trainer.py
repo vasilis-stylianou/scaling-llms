@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 import torch
 
-# Project-local imports
-from scaling_llms.tracking.constants import DIRS, FILES, METRICS
+from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
 from scaling_llms.tracking.managers import RunManager
 from scaling_llms.utils.checkpoint import CheckpointManager
 from scaling_llms.utils.loggers import TrainerLogger
@@ -166,7 +165,7 @@ class Trainer:
         # Init CheckpointManager
         if self.run is not None:
             self.ckpt_manager = CheckpointManager(
-                self.run[DIRS.checkpoints],
+                self.run[RUN_DIRS.checkpoints],
                 self.model,
                 self.optimizer,
                 self.scaler,
@@ -178,7 +177,7 @@ class Trainer:
         # System Logger
         self.sys_logger = TrainerLogger(
             name="Trainer",
-            log_dir=self.run[DIRS.metadata] if self.run else None,  # writes metadata/train.log
+            log_dir=self.run[RUN_DIRS.metadata] if self.run else None,  # writes metadata/train.log
             level=logging.INFO,
         )
 
@@ -215,14 +214,14 @@ class Trainer:
         run = RunManager(Path(run_path)) 
 
         # Load trainer configs from metadata dir
-        cfg_json_path = run[DIRS.metadata] / FILES.trainer_config
+        cfg_json_path = run[RUN_DIRS.metadata] / RUN_FILES.trainer_config
         cfg = TrainerConfig.from_json(cfg_json_path)
         
         # Init Trainer
         trainer = cls(cfg=cfg, model=model, train_dl=train_dl, eval_dl=eval_dl, run=run)
 
         # Configure Trainer's state
-        ckpt_path = run[DIRS.checkpoints] / ckpt_name
+        ckpt_path = run[RUN_DIRS.checkpoints] / ckpt_name
         trainer_state = trainer.checkpoint_manager.load(ckpt_path, strict=strict)
         trainer.load_state_dict(trainer_state)
 
@@ -260,7 +259,7 @@ class Trainer:
                 (self.step_idx % self.cfg.eval_log_freq == 0)
             ):
                 eval_metrics = self.evaluate(self.eval_dl)
-                self._log_metrics({METRICS.eval: eval_metrics})
+                self._log_metrics({METRIC_CATS.eval: eval_metrics})
 
                 self.sys_logger.log_eval(
                     step=self.step_idx, 
@@ -380,7 +379,7 @@ class Trainer:
 
         ## Network diagnostics (using the grads/params used by the optimizer)
         if (self.step_idx > 0) and (self.step_idx % self.cfg.net_log_freq == 0):
-            cat2metrics[METRICS.network] = self._compute_network_diagnostics()
+            cat2metrics[METRIC_CATS.network] = self._compute_network_diagnostics()
 
         # 4) Optimizer step
         if self.scaler.is_enabled():
@@ -397,17 +396,17 @@ class Trainer:
 
         ## System Diagnostics
         if (self.step_idx > 0) and (self.step_idx % self.cfg.sys_log_freq == 0):
-            cat2metrics[METRICS.system] = self._compute_system_diagnostics(tokens)
+            cat2metrics[METRIC_CATS.system] = self._compute_system_diagnostics(tokens)
 
         ## Training Metrics
         if (self.step_idx % self.cfg.train_log_freq == 0):
-            cat2metrics[METRICS.train] = self._compute_training_metrics(loss_sum, tokens)
+            cat2metrics[METRIC_CATS.train] = self._compute_training_metrics(loss_sum, tokens)
 
         # 6) Logging
         self._log_metrics(cat2metrics)
 
-        m = cat2metrics.get(METRICS.train)
-        s = cat2metrics.get(METRICS.system)
+        m = cat2metrics.get(METRIC_CATS.train)
+        s = cat2metrics.get(METRIC_CATS.system)
         if m is not None:
             self.sys_logger.log_train_step(
                 step=self.step_idx,
@@ -419,14 +418,14 @@ class Trainer:
                 step_ms=(s.get("step_ms") if s else None),
             )
 
-        return cat2metrics.get(METRICS.train, {})
+        return cat2metrics.get(METRIC_CATS.train, {})
 
     # --- INTERNALS ---
     # LOGGING METHODS
     def _log_configs(self):
         if self.run is None:
             return
-        self.run.log_metadata(self.cfg, FILES.trainer_config, format="json")
+        self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
         
     def _log_metrics(self, cat2metrics, step=None):
         if self.run is None:
@@ -441,7 +440,7 @@ class Trainer:
         if self.cfg.enable_tb:
             self.run.log_tb(cat2metrics, step)
 
-    # METRICS/DIAGNOSTICS 
+    # METRIC_CATS/DIAGNOSTICS 
     def _compute_network_diagnostics(self):
         return {
             "grad_zero_frac": float(compute_grad_zero_frac(self.model)),

@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Any
 
-from scaling_llms.tracking.constants import SCHEMA
+from scaling_llms.constants import METRIC_SCHEMA
 
 # Try TensorBoard import
 try:
@@ -70,9 +70,9 @@ class JsonlTracker(StepTracker):
         if not self.enabled:
             return
         payload = {
-            SCHEMA.step: int(step),
-            SCHEMA.metric: metric_name,
-            SCHEMA.value: value,
+            METRIC_SCHEMA.step: int(step),
+            METRIC_SCHEMA.metric: metric_name,
+            METRIC_SCHEMA.value: value,
         }
         self.fp.write(json.dumps(payload) + "\n")
         self.fp.flush()
@@ -228,12 +228,12 @@ class JsonlTrackerReader:
             df = pd.DataFrame.from_records(records)
 
             # Helpful default ordering if present
-            for col in (SCHEMA.step, SCHEMA.metric):
+            for col in (METRIC_SCHEMA.step, METRIC_SCHEMA.metric):
                 if col in df.columns:
                     # stable sort by these if they exist
                     pass
-            if SCHEMA.step in df.columns:
-                sort_cols = [SCHEMA.step] + ([SCHEMA.metric] if SCHEMA.metric in df.columns else [])
+            if METRIC_SCHEMA.step in df.columns:
+                sort_cols = [METRIC_SCHEMA.step] + ([METRIC_SCHEMA.metric] if METRIC_SCHEMA.metric in df.columns else [])
                 df = df.sort_values(sort_cols, kind="stable").reset_index(drop=True)
 
             self._cache_df[name] = df

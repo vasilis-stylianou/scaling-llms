@@ -16,7 +16,7 @@ def infinite_loader(loader):
 
 
 # -----------------------------
-# METRICS/DIAGNOSTICS
+# METRIC_CATS/DIAGNOSTICS
 # -----------------------------
 @torch.no_grad()
 def compute_grad_zero_frac(model: torch.nn.Module) -> float:

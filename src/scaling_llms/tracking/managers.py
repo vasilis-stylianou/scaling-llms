@@ -12,12 +12,11 @@ from scaling_llms.tracking.trackers import (
     JsonlTracker,
     TensorBoardTracker,
 )
-from scaling_llms.tracking.constants import DIRS, METRICS
-from scaling_llms.utils.env import (
-    PROJECT_NAME,
-    DESKTOP_DRIVE_MOUNTPOINT, 
-    LOCAL_TIMEZONE, 
-    is_colab
+from scaling_llms.constants import (
+    RUN_DIRS, 
+    METRIC_CATS,
+    GOOGLE_DRIVE_DEFAULTS,
+    LOCAL_TIMEZONE
 )
 import sqlite3
 from zoneinfo import ZoneInfo
@@ -26,16 +25,7 @@ from zoneinfo import ZoneInfo
 # -----------------------------
 # CONSTANTS & DEFAULTS
 # -----------------------------
-@dataclass(frozen=True)
-class GoogleDriveDefaults:
-    drive_subdir: str = PROJECT_NAME
-    desktop_mountpoint: str | Path = DESKTOP_DRIVE_MOUNTPOINT
-    colab_mountpoint: str | Path = "/content/drive" # recommended mount point in Colab
-    drive_root_name: str | None = None
-    db_name: str = "run_registry.db"
-    artifact_subdir: str = "artifacts"
 
-GOOGLE_DRIVE_DEFAULTS = GoogleDriveDefaults()
 
 
 # -----------------------------
@@ -94,7 +84,7 @@ class RunManager:
         self._subdir_name2path: dict[str, Path] = {}
 
         # Run's sub dir paths
-        for subdir_name in DIRS.as_list():
+        for subdir_name in RUN_DIRS.as_list():
             path = self.root / subdir_name
             self._subdir_name2path[subdir_name] = path
             setattr(self, subdir_name, path)
@@ -133,7 +123,7 @@ class RunManager:
 
         # Create directory structure
         run_root_dir.mkdir(exist_ok=False)
-        for subdir_name in DIRS.as_list():
+        for subdir_name in RUN_DIRS.as_list():
             (run_root_dir / subdir_name).mkdir()
 
         return cls(run_root_dir)
@@ -142,12 +132,12 @@ class RunManager:
     # PUBLIC API
     # -----------------------------
     def log_metrics(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
-        tracker_dict = self._get_jsonl_trackers(METRICS.as_list())
+        tracker_dict = self._get_jsonl_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
             tracker_dict[cat].log_metrics(step, metrics)
 
     def log_tb(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
-        tracker_dict = self._get_tb_trackers(METRICS.as_list())
+        tracker_dict = self._get_tb_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
             tracker_dict[cat].log_metrics(step=step, metrics=metrics)
 
@@ -161,7 +151,7 @@ class RunManager:
         if not filename.endswith(".json"):
             filename = f"{filename}.json"
 
-        path = self[DIRS.metadata] / filename
+        path = self[RUN_DIRS.metadata] / filename
 
         return log_as_json(obj, path)
 
@@ -179,8 +169,8 @@ class RunManager:
         self, subdir_name: str, categories: Iterable[str]
     ) -> TrackerDict:
         SUBDIR_NAME2TRACKER_CLS = {
-            DIRS.metrics: JsonlTracker,
-            DIRS.tensorboard: TensorBoardTracker,
+            RUN_DIRS.metrics: JsonlTracker,
+            RUN_DIRS.tensorboard: TensorBoardTracker,
         }
         if subdir_name not in SUBDIR_NAME2TRACKER_CLS:
             raise ValueError(f"Invalid subdir_name; got {subdir_name}")
@@ -202,14 +192,14 @@ class RunManager:
 
     def _get_jsonl_trackers(self, categories: Iterable[str]) -> TrackerDict:
         if self._jsonl_tracker_dict is None:
-            self._jsonl_tracker_dict = self._make_tracker_dict(DIRS.metrics, categories)
+            self._jsonl_tracker_dict = self._make_tracker_dict(RUN_DIRS.metrics, categories)
 
         return self._jsonl_tracker_dict
 
     def _get_tb_trackers(self, categories: Iterable[str]) -> TrackerDict:
         if self._tb_tracker_dict is None:
             self._tb_tracker_dict = self._make_tracker_dict(
-                DIRS.tensorboard, categories
+                RUN_DIRS.tensorboard, categories
             )
         return self._tb_tracker_dict
 
@@ -460,46 +450,37 @@ class BaseRunRegistry:
 
 
 # -----------------------------
-# GOOGLE DRIVE RUN REGISTRY
+# GOOGLE DRIVE CONFIGS
 # -----------------------------
-class GoogleDriveRunRegistry(BaseRunRegistry):
-    """
-    Wrapper around BaseRunRegistry that stores the registry + artifacts in Google Drive.
+@dataclass
+class GoogleDriveConfigs:
+    drive_subdir: str = GOOGLE_DRIVE_DEFAULTS.drive_subdir
+    data_subdir: str = GOOGLE_DRIVE_DEFAULTS.data_subdir
+    mountpoint: str | Path | None = None
+    drive_root_name: str | None = GOOGLE_DRIVE_DEFAULTS.drive_root_name
+    db_name: str = GOOGLE_DRIVE_DEFAULTS.db_name
+    artifact_subdir: str = GOOGLE_DRIVE_DEFAULTS.artifact_subdir
+    auto_mount: bool = True
+    force_remount: bool = False
 
-    In Colab, it can mount Drive via OAuth using google.colab.drive.mount.
-    Locally, set auto_mount=False and ensure the Drive folder is already mounted/synced.
-    """
-
-    def __init__(
-        self,
-        drive_subdir: str = GOOGLE_DRIVE_DEFAULTS.drive_subdir,
-        mountpoint: str | Path | None = None,
-        drive_root_name: str | None = GOOGLE_DRIVE_DEFAULTS.drive_root_name,
-        db_name: str = GOOGLE_DRIVE_DEFAULTS.db_name,
-        artifact_subdir: str = GOOGLE_DRIVE_DEFAULTS.artifact_subdir,
-        auto_mount: bool = True,
-        force_remount: bool = False,
-    ) -> None:
-        if mountpoint is None:
-            mountpoint = (
+    def __post_init__(self) -> None:
+        if self.mountpoint is None:
+            self.mountpoint = (
                 GOOGLE_DRIVE_DEFAULTS.colab_mountpoint
-                if is_colab()
+                if os.environ.get("SCALING_LLMS_ENV") == "colab"
                 else GOOGLE_DRIVE_DEFAULTS.desktop_mountpoint
             )
 
-        self.mountpoint = Path(mountpoint)
-        self.drive_subdir = drive_subdir
-        self.drive_root_name = drive_root_name
+        self._mountpoint = Path(self.mountpoint)
 
-        if auto_mount:
-            self._mount_if_needed(force_remount=force_remount)
+        if self.auto_mount:
+            self._mount_if_needed(force_remount=self.force_remount)
 
-        drive_root = self._resolve_drive_root()
-        root = drive_root / drive_subdir
-        db_path = root / db_name
-        artifact_root = root / artifact_subdir
-
-        super().__init__(db_path=db_path, artifact_root=artifact_root)
+        self.drive_root = self._resolve_drive_root()
+        self.project_root = self.drive_root / self.drive_subdir
+        self.artifact_root = self.project_root / self.artifact_subdir
+        self.data_root = self.project_root / self.data_subdir
+        self.db_path = self.project_root / self.db_name
 
     def _mount_if_needed(self, force_remount: bool = False) -> None:
         if self._drive_root_exists():
@@ -513,31 +494,150 @@ class GoogleDriveRunRegistry(BaseRunRegistry):
                 "Mount Drive manually or set auto_mount=False with a valid mountpoint."
             ) from exc
 
-        drive.mount(str(self.mountpoint), force_remount=force_remount)
+        drive.mount(str(self._mountpoint), force_remount=force_remount)
 
     def _drive_root_exists(self) -> bool:
         if self.drive_root_name:
-            return (self.mountpoint / self.drive_root_name).exists()
+            return (self._mountpoint / self.drive_root_name).exists()
 
-        return (self.mountpoint / "MyDrive").exists() or (
-            self.mountpoint / "My Drive"
+        return (self._mountpoint / "MyDrive").exists() or (
+            self._mountpoint / "My Drive"
         ).exists()
 
     def _resolve_drive_root(self) -> Path:
         if self.drive_root_name:
-            drive_root = self.mountpoint / self.drive_root_name
+            drive_root = self._mountpoint / self.drive_root_name
             if not drive_root.exists():
                 raise FileNotFoundError(f"Drive root not found: {drive_root}")
             return drive_root
 
-        mydrive = self.mountpoint / "MyDrive"
+        mydrive = self._mountpoint / "MyDrive"
         if mydrive.exists():
             return mydrive
 
-        my_drive = self.mountpoint / "My Drive"
+        my_drive = self._mountpoint / "My Drive"
         if my_drive.exists():
             return my_drive
 
         raise FileNotFoundError(
-            f"Neither 'MyDrive' nor 'My Drive' found under {self.mountpoint}"
+            f"Neither 'MyDrive' nor 'My Drive' found under {self._mountpoint}"
         )
+
+
+# -----------------------------
+# GOOGLE DRIVE RUN REGISTRY
+# -----------------------------
+class GoogleDriveRunRegistry(BaseRunRegistry):
+    """
+    Wrapper around BaseRunRegistry that stores the registry + artifacts in Google Drive.
+
+    In Colab, it can mount Drive via OAuth using google.colab.drive.mount.
+    Locally, set auto_mount=False and ensure the Drive folder is already mounted/synced.
+    """
+
+    def __init__(
+        self,
+        configs: GoogleDriveConfigs | None = None,
+        **overrides: Any,
+    ) -> None:
+        configs = configs or GoogleDriveConfigs(**overrides)
+        super().__init__(db_path=configs.db_path, artifact_root=configs.artifact_root)
+
+
+# -----------------------------
+# GOOGLE DRIVE DATA REGISTRY
+# -----------------------------
+class GoogleDriveDataRegistry:
+    """
+    Manages a project data root in Google Drive at:
+        <drive_root>/<drive_subdir>/<data_subdir>
+
+    Useful for organizing datasets and artifacts alongside run registries.
+    """
+
+    def __init__(
+        self,
+        configs: GoogleDriveConfigs | None = None,
+        **overrides: Any,
+    ) -> None:
+        self.configs = configs or GoogleDriveConfigs(**overrides)
+        self.data_root = self.configs.data_root
+        self.data_root.mkdir(parents=True, exist_ok=True)
+
+    def get_data_root(self) -> Path:
+        return self.data_root
+
+    def get_dataset_dir(self, name: str) -> Path:
+        path = self.data_root / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def copy_local_to_data_root(
+        self,
+        local_path: str | Path,
+        relative_path: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
+        """
+        Copy a local file or directory into data_root at the given relative path.
+
+        Works for both local and Colab since Drive is mounted to the filesystem.
+        """
+        src = Path(local_path).expanduser().resolve()
+        dst = (self.data_root / relative_path).expanduser().resolve()
+
+        if not src.exists():
+            raise FileNotFoundError(f"Source not found: {src}")
+
+        if dst.exists():
+            if not overwrite:
+                raise FileExistsError(f"Destination already exists: {dst}")
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+        return dst
+
+    def copy_data_root_to_local(
+        self,
+        relative_path: str | Path,
+        local_path: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
+        """
+        Copy a file or directory from data_root to a local destination path.
+
+        Works for both local and Colab since Drive is mounted to the filesystem.
+        """
+        src = (self.data_root / relative_path).expanduser().resolve()
+        dst = Path(local_path).expanduser().resolve()
+
+        if not src.exists():
+            raise FileNotFoundError(f"Source not found: {src}")
+
+        if dst.exists():
+            if not overwrite:
+                raise FileExistsError(f"Destination already exists: {dst}")
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+        return dst

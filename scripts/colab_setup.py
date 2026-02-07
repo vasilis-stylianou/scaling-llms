@@ -12,7 +12,8 @@ def _in_colab() -> bool:
     )
 
 if _in_colab():
-    print("Working in Colab")
+    os.environ["SCALING_LLMS_ENV"] = "colab"
+    print("Working Environment: colab")
 
     REPO_URL = "https://github.com/vasilis-stylianou/scaling-llms.git"
     REPO_DIR = Path("/content/scaling-llms")
@@ -32,4 +33,6 @@ if _in_colab():
     print("Repo ready; imports should work without restarting the kernel.")
     
 else:
+    os.environ["SCALING_LLMS_ENV"] = "local"
+    print("Working Environment: local")
     print("Not in Colab, skipping setup")

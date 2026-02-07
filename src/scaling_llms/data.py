@@ -1,318 +1,414 @@
-from collections import deque
-from collections.abc import Iterator
-from dataclasses import dataclass
-from datasets import load_dataset
-import itertools
+from __future__ import annotations
+
 import os
-import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+import tiktoken
 import torch
-from torch.utils.data import Dataset, DataLoader
+from datasets import load_dataset
+from torch.utils.data import DataLoader, Dataset
+
+from scaling_llms.constants import LOCAL_DATA_DIR_NAME
+from scaling_llms.tracking.managers import GoogleDriveDataRegistry
 
 
-# -----------------------------
-# DATA SOURCES
-# -----------------------------
-@dataclass(frozen=True)
-class DataSources:
-    """Available data sources for DataManager."""
-    tiny_shakespeare: str = "tiny_shakespeare"
-    wikitext103: str = "wikitext103"
-    openwebtext: str = "openwebtext"
+# ============================================================
+# Determinism (single GPU)
+# ============================================================
+def set_determinism(seed: int) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-# Singleton instance
-DATA_SOURCES = DataSources()
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+    # Strict determinism (can throw if you use nondeterministic ops)
+    # Comment out if it blocks you during early bring-up.
+    torch.use_deterministic_algorithms(True)
 
 
-# -----------------------------
-# HELPER FUNCTIONS
-# -----------------------------
-def infinite_dataloader(loader):
-    """Yield batches from `loader` indefinitely.
+# ============================================================
+# Tokenizer (tiktoken preferred; fallback to HF GPT2)
+# ============================================================
+def make_gpt2_tokenizer():
+    enc = tiktoken.get_encoding("gpt2")
 
-    Useful for training loops that want an endless stream of batches.
+    def encode_fn(text: str) -> list[int]:
+        return enc.encode(text)
+
+    return encode_fn, enc.eot_token, enc.n_vocab
+
+
+# ============================================================
+# Memmap builder (tokenize once, reuse forever)
+# ============================================================
+def build_memmap_tokens(
+    *,
+    token_mmap_path: str | Path,
+    texts: list[str],
+    encode_fn,
+    eos_id: int,
+    dtype=np.uint16,
+    append_eos: bool = True,
+) -> Path:
     """
-    while True:
-        for batch in loader:
-            yield batch
+    Tokenize texts once into a contiguous, file-backed token buffer for
+    efficient reading.
+
+    Uses a NumPy memmap to write tokens to disk so subsequent reads can
+    memory-map the file and access slices on demand without loading the
+    full array into RAM. This enables fast, random window access during
+    training while keeping memory usage low.
+    """
+    token_mmap_path = Path(token_mmap_path).expanduser().resolve()
+    token_mmap_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Skip tokenization if already exists
+    
+    if token_mmap_path.exists():
+        print(f"Found existing token memmap at {token_mmap_path}, skipping tokenization.")
+        return token_mmap_path
+
+    print(f"Token memmap not found at {token_mmap_path}, building now...")
+
+    # Pass 1: count tokens to pre-allocate memmap (append EOS token if requested)
+    total_tokens = 0
+    for text in texts:
+        # Skip empty or whitespace-only texts to avoid unnecessary tokens
+        if not text.strip():
+            continue
+        total_tokens += len(encode_fn(text))
+        if append_eos:
+            total_tokens += 1
+
+    # Pass 2: tokenize and write to memmap
+    arr = np.memmap(token_mmap_path, mode="w+", dtype=dtype, shape=(total_tokens,))
+    write_index = 0
+    for text in texts:
+        if not text.strip():
+            continue
+        ids = encode_fn(text)
+        n = len(ids)
+        arr[write_index : write_index + n] = ids
+        write_index += n
+        if append_eos:
+            arr[write_index] = eos_id
+            write_index += 1
+
+    arr.flush()  # ensure data is written to disk
+    assert write_index == total_tokens  # sanity check
+
+    return token_mmap_path
 
 
-def train_val_split_1d(data: torch.Tensor, val_frac: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
-    assert data.ndim == 1
-    assert 0.0 < val_frac < 1.0
-    n = data.numel()
-    n_val = int(n * val_frac)
-    train = data[:-n_val]
-    val = data[-n_val:]
-    return train, val
-
-
-def load_dataset_bytes(
+# ============================================================
+# HuggingFace Datasets
+# ============================================================
+def load_text_splits_from_hf(
     dataset_name: str,
+    train_split: str | None = None,
+    val_split: str | None = None,
     dataset_config: str | None = None,
-    split: str = "train",
-    max_samples: int | None = None,
-    text_separator: str = "\n",
-) -> torch.Tensor:
-    """Load a HuggingFace dataset and return as token IDs (0-255 bytes).
+    dataset_revision: str | None = None,
+) -> tuple[list[str], list[str]]:
     
-    Requires: pip install datasets
-    
-    Args:
-        dataset_name: name of the HuggingFace dataset
-        dataset_config: optional config name (e.g., "wikitext-103-v1")
-        split: dataset split to load ("train", "validation", "test")
-        max_samples: maximum number of documents to load (None = all)
-        text_separator: string to join text documents with
-    
-    Returns:
-        1D tensor of token IDs (byte values 0-255)
+    kwargs = dict(
+        path=dataset_name,
+        name=dataset_config,
+        revision=dataset_revision,
+    )
+    train_ds = load_dataset(split=train_split or "train", **kwargs)  # type: ignore[index]
+    val_ds = load_dataset(split=val_split or "validation", **kwargs)  # type: ignore[index]
+    train_texts = [x["text"] for x in train_ds]  # type: ignore[index]
+    val_texts = [x["text"] for x in val_ds]  # type: ignore[index]
+
+    return train_texts, val_texts
+
+
+
+
+# ============================================================
+# Deterministic sampling: sample_idx -> window start
+# ============================================================
+def _splitmix64(x: int) -> int:
+    x = (x + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    z = x
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9 & 0xFFFFFFFFFFFFFFFF
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EB & 0xFFFFFFFFFFFFFFFF
+    return (z ^ (z >> 31)) & 0xFFFFFFFFFFFFFFFF
+
+
+class DeterministicTokenWindows(Dataset):
     """
-    
-    # Load dataset
-    if dataset_config:
-        dataset = load_dataset(dataset_name, dataset_config, split=split)
-    else:
-        dataset = load_dataset(dataset_name, split=split)
-    
-    # Apply max_samples limit if specified
-    if max_samples is not None and max_samples < len(dataset):
-        dataset = dataset.select(range(max_samples))
-    
-    # Concatenate all text and encode as bytes
-    text = text_separator.join(dataset["text"])
-    data = text.encode("utf-8")
-    x = torch.frombuffer(data, dtype=torch.uint8).clone().to(torch.int64)
-    
-    return x
-
-
-def load_tiny_shakespeare_direct(data_dir: str = "./data") -> torch.Tensor:
-    """Download and load Tiny Shakespeare from raw URL.
-    
-    Uses direct download since HF dataset uses deprecated loading script.
-    
-    Args:
-        data_dir: directory to store the downloaded file
-    
-    Returns:
-        1D tensor of token IDs (byte values 0-255)
+    Deterministic "random windows" over a contiguous token buffer.
+    Reproducible + resumable: window depends only on (seed, global_sample_idx).
+    Windows are not guaranteed to be unique or non-overlapping.
     """
-    url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-    os.makedirs(data_dir, exist_ok=True)
-    path = os.path.join(data_dir, "tinyshakespeare.txt")
-    
-    # Download if not exists
-    if not os.path.exists(path):
-        urllib.request.urlretrieve(url, path)
-    
-    # Load and encode
-    with open(path, "rb") as f:
-        data = f.read()
-    x = torch.frombuffer(data, dtype=torch.uint8).clone().to(torch.int64)
-    
-    return x
 
-
-# -----------------------------
-# RANDOM WINDOW LM DATASET
-# -----------------------------
-class RandomWindowLM(Dataset):
     def __init__(
-        self, 
-        tokens_1d: torch.Tensor, 
-        seq_len: int, 
-        generator: torch.Generator | None = None
+        self,
+        tokens_mmap_buffer: np.memmap,
+        seq_len: int,
+        seed: int,
+        num_samples: int,
     ):
-        assert tokens_1d.ndim == 1
-        assert tokens_1d.numel() > seq_len + 1
-        self.tokens = tokens_1d
-        self.seq_len = seq_len
-        # Optional per-dataset generator to make sampling reproducible
-        self.generator = generator
+        self.tokens_memmap_buffer = tokens_mmap_buffer
+        self.seq_len = int(seq_len)
+        self.seed = int(seed)
+        self.num_samples = int(num_samples)
+
+        # Init max valid start index for a window of length seq_len
+        self.max_idx = len(self.tokens_memmap_buffer) - (self.seq_len + 1)
+        if self.max_idx <= 0:
+            raise ValueError("Token buffer too small for seq_len")
+        if self.num_samples <= 0:
+            raise ValueError("num_samples must be > 0")
 
     def __len__(self) -> int:
-        # arbitrary: number of possible windows (not used much since we sample randomly)
-        return self.tokens.numel() - (self.seq_len + 1)
+        return self.num_samples
 
-    def __getitem__(self, idx: int):
-        # ignore idx, sample random window
-        max_start = self.tokens.numel() - (self.seq_len + 1)
-        if self.generator is not None:
-            start = torch.randint(0, max_start, (1,), generator=self.generator).item()
-        else:
-            start = torch.randint(0, max_start, (1,)).item()
-        chunk = self.tokens[start : start + self.seq_len + 1]
-        x = chunk[:-1]  # [T]
-        y = chunk[1:]   # [T]
-        return x, y
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Hash sample idx to get a pseudo-random but deterministic window start
+        hashed_index = _splitmix64(self.seed ^ int(idx))
+        start_index = int(
+            hashed_index % (self.max_idx + 1)
+        )  # start index must be in [0, max_idx]
+
+        # Return input and target windows as PyTorch tensors
+        x = np.asarray(
+            self.tokens_memmap_buffer[start_index : start_index + self.seq_len], dtype=np.int64
+        )
+        y = np.asarray(
+            self.tokens_memmap_buffer[start_index + 1 : start_index + 1 + self.seq_len],
+            dtype=np.int64,
+        )
+        return torch.from_numpy(x), torch.from_numpy(y)
 
 
-# -----------------------------
-# DATA MANAGER
-# -----------------------------
-class DataManager:
-    """Factory for dataset/data-loader creation across multiple sources.
+class OffsetDataset(Dataset):
+    """View a dataset starting at a global sample index (for resume)."""
 
-    Usage:
-      dm = DataManager(data_dir="./data", seed=1234)
-      train_iter, val_iter = dm.get_loaders(DATA_SOURCES.tiny_shakespeare, seq_len=512, batch_size=8, as_iterable=True, resume_step=100)
+    def __init__(self, dataset: Dataset, offset_start: int):
+        self.dataset = dataset
+        self.offset = int(offset_start)
+        if self.offset < 0 or self.offset > len(self.dataset):
+            raise ValueError("Invalid start")
 
-    The manager maintains a registry of load functions. Each source has a load function
-    that returns a 1D token tensor. Common DataLoader creation logic is handled internally.
+    def __len__(self) -> int:
+        return len(self.dataset) - self.offset
+
+    def __getitem__(self, i: int):
+        return self.dataset[self.offset + i]
+
+
+class SequentialTokenChunks(Dataset):
+    """
+    Deterministic eval: sequential non-overlapping chunks over val buffer.
     """
 
-    def __init__(self, data_dir: str = "./data", seed: int = 1337):
-        self.data_dir = data_dir
-        self.seed = int(seed)
-        # registry maps source name -> (load_fn, kwargs)
-        self._registry = {
-            DATA_SOURCES.tiny_shakespeare: {
-                # Uses direct download, not HF datasets
-            },
-            DATA_SOURCES.wikitext103: {
-                "dataset_name": "wikitext",
-                "dataset_config": "wikitext-103-v1",
-                "text_separator": "\n",
-            },
-            DATA_SOURCES.openwebtext: {
-                "dataset_name": "Skylion007/openwebtext",  # Parquet-based version
-                "text_separator": "\n\n",
-            },
-        }
+    def __init__(self, tokens_mmap_buffer: np.memmap, seq_len: int):
+        self.tokens_memmap_buffer = tokens_mmap_buffer
+        self.seq_len = int(seq_len)
+        self.num_sequences = (len(self.tokens_memmap_buffer) - 1) // self.seq_len
+        if self.num_sequences <= 0:
+            raise ValueError("Token buffer too small for seq_len")
 
-    # --- API ---
-    def list_data_sources(self) -> list[str]:
-        """List all registered data sources."""
-        return list(self._registry.keys())
+    def __len__(self) -> int:
+        return self.num_sequences
 
-    def get_loaders(
-        self,
-        source: str,
-        *,
-        seq_len: int = 512,
-        batch_size: int = 16,
-        val_frac: float = 0.1,
-        num_workers: int = 2,
-        pin_memory: bool = True,
-        persistent_workers: bool = True,
-        as_iterable: bool = False,
-        resume_step: int = 0,
-        seed: int | None = None,
-        # Source-specific kwargs
-        max_samples: int | None = None,  # for openwebtext
-        val_split: str = "validation",   # for wikitext103
-    ) -> tuple[Iterator, Iterator] | tuple[DataLoader, DataLoader]:
-        """Create loaders for `source`.
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        i = idx * self.seq_len  # start index of the chunk
+        x = np.asarray(self.tokens_memmap_buffer[i : i + self.seq_len], dtype=np.int64)
+        y = np.asarray(self.tokens_memmap_buffer[i + 1 : i + 1 + self.seq_len], dtype=np.int64)
+        return torch.from_numpy(x), torch.from_numpy(y)
 
-        - `as_iterable=True` returns infinite iterators for train/val.
-        - `resume_step` advances the train iterator by `resume_step` batches.
-        - `seed` overrides the manager seed for deterministic sampling.
-        - `max_samples` limits the number of documents (openwebtext only).
-        - `val_split` specifies validation split (wikitext103: "validation" or "test").
-        """
-        if source not in self._registry:
-            raise ValueError(f"Unknown data source: {source}")
 
-        config = self._registry[source]
-        use_seed = self.seed if seed is None else int(seed)
+# ============================================================
+# DATA CONFIG
+# ============================================================
+HF_DATASET_NAMES = Literal[
+    "wikitext-103", 
+    "openwebtext"
+]
 
-        # Load dataset with source-specific configuration
-        load_kwargs = config.copy()
-        
-        # Handle source-specific parameters
-        if source == DATA_SOURCES.tiny_shakespeare:
-            # Use direct download (HF dataset uses deprecated loading script)
-            tokens = load_tiny_shakespeare_direct(data_dir=self.data_dir)
-            train_loader, val_loader = self._create_loaders(
-                tokens, val_frac, seq_len, batch_size,
-                num_workers, pin_memory, persistent_workers, use_seed
+@dataclass(frozen=True)
+class DataConfig:
+
+    dataset_name: HF_DATASET_NAMES
+    seq_len: int 
+    train_batch_size: int 
+    eval_batch_size: int 
+
+    # Data and cache directories (can be shared across datasets and runs)
+    local_data_dir: str | Path = LOCAL_DATA_DIR_NAME
+
+    # Training budget (tokens) + resume cursor (samples)
+    train_tokens_budget: int = 1_000_000
+    start_sample_idx: int = 0  # resume cursor (global sample index)
+
+    # Always start with 0 for deterministic bring-up
+    num_workers: int = 0
+
+    # Optional slicing and revision for HuggingFace datasets
+    train_split: str | None = None
+    val_split: str | None = None
+    dataset_config: str | None = None
+    dataset_revision: str | None = None
+
+    seed: int = 1234
+
+    def __post_init__(self):
+        self._configure_mmap_paths()
+        self._validate_num_samples()
+
+    def _validate_num_samples(self):
+        # Validate that start_sample_idx is within the total number of samples given the train_tokens_budget and seq_len
+        num_samples = max(1, self.train_tokens_budget // self.seq_len)
+        if self.start_sample_idx >= num_samples:
+            raise ValueError(
+                f"start_sample_idx={self.start_sample_idx} >= num_samples={num_samples} based on train_tokens_budget={self.train_tokens_budget} and seq_len={self.seq_len}"
             )
-        elif source == DATA_SOURCES.wikitext103:
-            # WikiText-103 has pre-split train/validation/test sets
-            train_tokens = load_dataset_bytes(**load_kwargs, split="train")
-            val_tokens = load_dataset_bytes(**load_kwargs, split=val_split)
-            # For wikitext, we already have separate train/val so no split needed
-            torch.manual_seed(use_seed)
-            gen = torch.Generator()
-            gen.manual_seed(use_seed)
-            
-            train_ds = RandomWindowLM(train_tokens, seq_len=seq_len, generator=gen)
-            val_ds = RandomWindowLM(val_tokens, seq_len=seq_len, generator=gen)
-            
-            dl_kwargs = dict(
-                batch_size=batch_size,
-                shuffle=False,
-                drop_last=True,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-                persistent_workers=(persistent_workers and num_workers > 0),
+        
+    def _configure_mmap_paths(self):
+        self.local_data_dir = Path(self.local_data_dir).expanduser().resolve()
+        out_root = self.local_data_dir / "tokenized" / self.dataset_name  # type: ignore[union-attr]
+        if self.dataset_config is not None:
+            out_root = out_root / self.dataset_config
+        # TODO: f"{train_split.replace('/', '_').replace(':', '_')}__{val_split.replace('/', '_').replace(':', '_')}"
+        self.train_mmap_path = out_root / "train.bin"
+        self.val_mmap_path = out_root / "val.bin"
+        
+# ============================================================
+# DATALOADER FACTORY
+# ============================================================
+def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
+    set_determinism(cfg.seed)
+
+    # Init Google Drive data registry for managing data paths and copying between local and drive
+    data_registry = GoogleDriveDataRegistry()
+
+    gdrive_data_root = data_registry.get_data_root()
+    gdrive_train_mmap_path = gdrive_data_root / cfg.train_mmap_path.relative_to(cfg.local_data_dir)
+    gdrive_val_mmap_path = gdrive_data_root / cfg.val_mmap_path.relative_to(cfg.local_data_dir)
+
+    # SKIP Steps 1-2 if memmaps already exist in Google Drive
+    if (not gdrive_train_mmap_path.exists()) and (not gdrive_val_mmap_path.exists()):
+
+        # --- STEP 1: Load raw text splits (optionally sliced) ---
+        # NOTE: if not using HuggingFace datasets, you can condition on (cfg.dataset_name in HF_DATASET_NAMES)
+        # and implement your own loading logic here to produce train_texts and val_texts as lists of strings.
+        train_texts, val_texts = load_text_splits_from_hf(
+            dataset_name=cfg.dataset_name,
+            train_split=cfg.train_split,
+            val_split=cfg.val_split,
+            dataset_config=cfg.dataset_config,
+            dataset_revision=cfg.dataset_revision,
+        )   
+
+        # --- STEP 2: Tokenization ---
+        encode_fn, eos_id, vocab_size = make_gpt2_tokenizer()
+
+        # Use smallest unsigned dtype that can represent all token ids to save memory
+        dtype = np.uint16 if vocab_size <= 65535 else np.uint32
+
+        # Tokenize to memmap once and reuse forever 
+        # (efficient random access without loading all tokens into RAM)
+        # Note: for large datasets, this may take time and disk space on first run,
+        # but subsequent runs will be fast and efficient due to memory-mapping.
+        for mmap_path,texts in [(cfg.train_mmap_path, train_texts), (cfg.val_mmap_path, val_texts)]:
+            build_memmap_tokens(
+                token_mmap_path=mmap_path,
+                texts=texts,
+                encode_fn=encode_fn,
+                eos_id=eos_id,
+                dtype=dtype,
             )
-            train_loader = DataLoader(train_ds, **dl_kwargs)
-            val_loader = DataLoader(val_ds, **dl_kwargs)
-        elif source == DATA_SOURCES.openwebtext:
-            # Skylion007/openwebtext is large, apply max_samples limit
-            tokens = load_dataset_bytes(**load_kwargs, split="train", max_samples=max_samples or 10000)
-            train_loader, val_loader = self._create_loaders(
-                tokens, val_frac, seq_len, batch_size,
-                num_workers, pin_memory, persistent_workers, use_seed
-            )
-        else:
-            # Generic: tiny_shakespeare and custom sources
-            tokens = load_dataset_bytes(**load_kwargs, split="train")
-            train_loader, val_loader = self._create_loaders(
-                tokens, val_frac, seq_len, batch_size,
-                num_workers, pin_memory, persistent_workers, use_seed
-            )
 
-        if not as_iterable:
-            return train_loader, val_loader
+        # Copy local memmaps to Google Drive
+        data_registry.copy_local_to_data_root(cfg.train_mmap_path, gdrive_train_mmap_path, overwrite=True)
+        data_registry.copy_local_to_data_root(cfg.val_mmap_path, gdrive_val_mmap_path, overwrite=True)
 
-        train_iter = infinite_dataloader(train_loader)
-        val_iter = infinite_dataloader(val_loader)
+    # --- STEP 3: Create token buffers for training and evaluation ---
+    if (not cfg.train_mmap_path.exists()) and (not cfg.val_mmap_path.exists()):
+        print("Memmaps not found locally, copying locally from Google Drive...")
+        data_registry.copy_data_root_to_local(gdrive_train_mmap_path, cfg.train_mmap_path, overwrite=True)
+        data_registry.copy_data_root_to_local(gdrive_val_mmap_path, cfg.val_mmap_path, overwrite=True)
 
-        # Resume by advancing the iterator efficiently
-        if resume_step and resume_step > 0:
-            # efficient skip: consume `resume_step` items without storing
-            deque(itertools.islice(train_iter, resume_step), maxlen=0)
+    train_tokens_buffer = np.memmap(cfg.train_mmap_path, mode="r", dtype=dtype)
+    val_tokens_buffer = np.memmap(cfg.val_mmap_path, mode="r", dtype=dtype)
 
-        return train_iter, val_iter
+    # --- STEP 4: Create deterministic train schedule (token-budget driven) ---
+    # 1 sample == 1 sequence of length seq_len
 
-    # --- PRIVATE HELPERS ---
-    def _create_loaders(
-        self,
-        tokens: torch.Tensor,
-        val_frac: float,
-        seq_len: int,
-        batch_size: int,
-        num_workers: int,
-        pin_memory: bool,
-        persistent_workers: bool,
-        seed: int,
-    ) -> tuple[DataLoader, DataLoader]:
-        """Common logic to create train/val DataLoaders from token tensor."""
-        torch.manual_seed(seed)
-        
-        # Split into train/val
-        train_tokens, val_tokens = train_val_split_1d(tokens, val_frac=val_frac)
-        
-        # Create generator for reproducible sampling
-        gen = torch.Generator()
-        gen.manual_seed(seed)
-        
-        # Create datasets
-        train_ds = RandomWindowLM(train_tokens, seq_len=seq_len, generator=gen)
-        val_ds = RandomWindowLM(val_tokens, seq_len=seq_len, generator=gen)
-        
-        # Create loaders
-        dl_kwargs = dict(
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=(persistent_workers and num_workers > 0),
-        )
-        train_loader = DataLoader(train_ds, **dl_kwargs)
-        val_loader = DataLoader(val_ds, **dl_kwargs)
-        
-        return train_loader, val_loader
+    # Train DS: deterministic random windows, with global sample index offset for resume
+    deterministic_train_ds = DeterministicTokenWindows(
+        tokens_mmap_buffer=train_tokens_buffer,
+        seq_len=cfg.seq_len,
+        seed=cfg.seed,
+        num_samples=max(1, cfg.train_tokens_budget // cfg.seq_len),
+    )
+    train_ds = OffsetDataset(deterministic_train_ds, offset_start=cfg.start_sample_idx)
+
+    # Eval DS: sequential non-overlapping chunks
+    eval_ds = SequentialTokenChunks(val_tokens_buffer, seq_len=cfg.seq_len)
+
+    # --- STEP 5: Create PyTorch dataloaders ---
+    dl_kwargs = dict(
+        shuffle=False,  # windows are already deterministic/randomized
+        num_workers=cfg.num_workers, 
+        pin_memory=True,
+        drop_last=False,
+    )
+    train_dl = DataLoader(train_ds, batch_size=cfg.train_batch_size, **dl_kwargs)
+    eval_dl = DataLoader(eval_ds, batch_size=cfg.eval_batch_size, **dl_kwargs)
+
+    return train_dl, eval_dl
+
+
+
+
+
+
+
+
+
+
+
+    # info: Dict[str, Any] = {
+    #     "dataset_name": dataset_name,
+    #     "out_root": str(out_root),
+    #     "train_mmap_path": str(train_mmap_path),
+    #     "val_mmap_path": str(val_mmap_path),
+    #     "train_tokens_in_buffer": int(len(train_tokens_buffer)),
+    #     "val_tokens_in_buffer": int(len(val_tokens_buffer)),
+    #     "vocab_size": vocab_size,
+    #     "eos_id": eos_id,
+    #     "dtype": str(dtype),
+    #     "seq_len": cfg.seq_len,
+    #     "seed": cfg.seed,
+    #     "train_tokens_budget": cfg.train_tokens_budget,
+    #     "total_samples": max(1, cfg.train_tokens_budget // cfg.seq_len),
+    #     "start_sample_idx": cfg.start_sample_idx,
+    #     "num_workers": cfg.num_workers,
+    #     "wikitext_train_split": (
+    #         cfg.wikitext_train_split if dataset_name.startswith("wikitext") else None
+    #     ),
+    #     "wikitext_val_split": (
+    #         cfg.wikitext_val_split if dataset_name.startswith("wikitext") else None
+    #     ),
+    #     "wikitext_revision": (
+    #         cfg.wikitext_revision if dataset_name.startswith("wikitext") else None
+    #     ),
+    #     "owt_split": (cfg.owt_split if dataset_name == "openwebtext" else None),
+    #     "owt_revision": (cfg.owt_revision if dataset_name == "openwebtext" else None),
+    #     "owt_val_size": (cfg.owt_val_size if dataset_name == "openwebtext" else None),
+    # }
+
+    # return train_dl, eval_dl, info
+
