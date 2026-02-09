@@ -1,0 +1,114 @@
+import os
+from pathlib import Path
+from dataclasses import dataclass
+
+os.environ["SCALING_LLMS_ENV"] = os.getenv("SCALING_LLMS_ENV", "local")
+
+LOCAL_TIMEZONE: str = "Europe/Athens"
+DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com"
+PROJECT_NAME: str = "scaling-llms"
+PROJECT_DEV_NAME: str = "scaling-llms-dev"
+LOCAL_DATA_DIR = Path.home() / ".local" / "share" / PROJECT_NAME
+HF_CACHE_DIR_NAME = "huggingface_cache"
+TOKENIZED_CACHE_DIR_NAME = "tokenized_cache"
+MAX_CACHE_GB = 5 if os.environ["SCALING_LLMS_ENV"] == "local" else 30  # per cache dir (to prevent OOM issues on limited local storage)
+
+
+# -------------------------
+# METRIC TRACKING SCHEMA
+# -------------------------
+@dataclass(frozen=True)
+class SchemaColumns:
+    step: str = "step"
+    metric: str = "metric"
+    value: str = "value"
+
+
+# -------------------------
+# METRIC CATEGORIES
+# -------------------------
+@dataclass(frozen=True)
+class MetricCategories:
+    network: str = "network"
+    system: str = "system"
+    train: str = "train"
+    eval: str = "eval"
+
+    def as_list(self) -> list[str]:
+        """Return all categories as a list."""
+        return [self.network, self.system, self.train, self.eval]
+
+
+# --------------------------
+# RUN FILE & DIRECTORY NAMES
+# --------------------------
+@dataclass(frozen=True)
+class RunFileNames:
+    trainer_config: str = "trainer_configs.json"
+    data_config: str = "data_configs.json"
+    model_config: str = "model_configs.json"
+
+@dataclass(frozen=True)
+class RunDirNames:
+    metadata: str = "metadata"
+    metrics: str = "metrics"
+    checkpoints: str = "checkpoints"
+    tensorboard: str = "tb"
+
+    def as_list(self) -> list[str]:
+        """Return all directory names as a list."""
+        return [self.metadata, self.metrics, self.checkpoints, self.tensorboard]
+
+
+# --------------------------
+# DATA FILE NAMES
+# --------------------------
+# TODO
+@dataclass(frozen=True)
+class DataFileNames:
+    train_tokens: str = "train.bin"
+    eval_tokens: str = "eval.bin"
+
+
+
+
+# --------------------------
+# GOOGLE DRIVE DEFAULTS
+# --------------------------
+@dataclass(frozen=True)
+class GoogleDriveDefaults:
+    """
+    drive_subdir is the subdirectory within the Google Drive mount point where runs and data will be stored.
+    
+    Example structure on Google Drive:
+
+    drive_root/drive_subdir/
+    ├── data/
+    ├── db_name/
+    └── artifacts/
+        └── <experiment_name>/
+            ├── <run_1>/
+            ├── <run_2>/
+            └── ...
+    """
+    desktop_mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT)
+    colab_mountpoint: Path = Path("/content/drive") # recommended mount point in Colab
+    project_subdir: str = PROJECT_NAME
+    run_registry_name: str = "run_registry"
+    runs_db_name: str = "runs.db"
+    runs_artifacts_subdir: str = "artifacts"
+    data_registry_name: str = "data_registry"
+    datasets_db_name: str = "datasets.db"
+    tokenized_datasets_subdir: str = "tokenized_datasets"
+
+
+
+# -------------------------
+# INSTANTIATE SINGLETONS
+# -------------------------
+METRIC_SCHEMA = SchemaColumns()
+METRIC_CATS = MetricCategories()
+RUN_FILES = RunFileNames()
+RUN_DIRS = RunDirNames()
+DATA_FILES = DataFileNames()
+GOOGLE_DRIVE_DEFAULTS = GoogleDriveDefaults()

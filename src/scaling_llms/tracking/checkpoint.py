@@ -23,7 +23,7 @@ class CheckpointManager:
         self,
         checkpoint_dir: Path | str,
         model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
+        optimizer: torch.optim.Optimizer | None = None,
         scaler: Any = None,  # GradScaler
         lr_scheduler: Any = None,  # LambdaLR | None
     ):
@@ -38,7 +38,7 @@ class CheckpointManager:
     
     def save(
         self,
-        trainer_state: dict[str, Any],
+        trainer_state: dict[str, Any] = None,
         name: str = "latest.pt",
     ) -> Path:
         """
@@ -55,8 +55,8 @@ class CheckpointManager:
         
         ckpt = {
             "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "scaler": self.scaler.state_dict() if self.scaler.is_enabled() else None,
+            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
+            "scaler": self.scaler.state_dict() if (self.scaler is not None and self.scaler.is_enabled()) else None,
             "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None,
             "trainer": trainer_state,  # Trainer state dict
         }
@@ -83,7 +83,8 @@ class CheckpointManager:
         
         # Load training objects
         self.model.load_state_dict(ckpt["model"], strict=strict)
-        self.optimizer.load_state_dict(ckpt["optimizer"])
+        if self.optimizer is not None and ckpt.get("optimizer") is not None:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
         
         if self.scaler and self.scaler.is_enabled() and (ckpt.get("scaler") is not None):
             self.scaler.load_state_dict(ckpt["scaler"])

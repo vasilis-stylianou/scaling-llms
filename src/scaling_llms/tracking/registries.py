@@ -2,34 +2,29 @@ from dataclasses import is_dataclass, asdict, dataclass
 from datetime import datetime
 import json
 import os
-import shutil
 import pandas as pd
 from pathlib import Path
+import shutil
+import sqlite3
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
+
+from scaling_llms.constants import (
+    DATA_FILES,
+    GOOGLE_DRIVE_DEFAULTS,
+    LOCAL_TIMEZONE,
+    METRIC_CATS,
+    RUN_DIRS, 
+)
 from scaling_llms.tracking.trackers import (
     TrackerConfig,
     TrackerDict,
     JsonlTracker,
     TensorBoardTracker,
 )
-from scaling_llms.constants import (
-    RUN_DIRS, 
-    METRIC_CATS,
-    GOOGLE_DRIVE_DEFAULTS,
-    LOCAL_TIMEZONE
-)
-import sqlite3
-from zoneinfo import ZoneInfo
-
 
 # -----------------------------
-# CONSTANTS & DEFAULTS
-# -----------------------------
-
-
-
-# -----------------------------
-# JSON helpers
+# HELPER FUNCTIONS
 # -----------------------------
 def _json_default(o: Any):
     if is_dataclass(o) and not isinstance(o, type):
@@ -40,8 +35,7 @@ def _json_default(o: Any):
         return list(o)
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
-
-def log_as_json(obj, path) -> Path:
+def _log_as_json(obj, path) -> Path:
     path = Path(path)
     if path.exists():
         return path
@@ -60,6 +54,16 @@ def log_as_json(obj, path) -> Path:
 
     os.replace(tmp, path)
     return path
+
+def _get_next_id(prefix: str, parent_dir: Path) -> int:
+    existing_ids: list[int] = []
+    for p in parent_dir.iterdir():
+        if p.is_dir() and p.name.startswith(prefix):
+            suffix = p.name[len(prefix) :]
+            if suffix.isdigit():
+                existing_ids.append(int(suffix))
+
+    return max(existing_ids, default=0) + 1
 
 
 # -----------------------------
@@ -110,15 +114,8 @@ class RunManager:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Find next available run_<N>
-        existing_ids: list[int] = []
-        for p in log_dir.iterdir():
-            if p.is_dir() and p.name.startswith(cls._RUN_DIR_PREFIX):
-                suffix = p.name[len(cls._RUN_DIR_PREFIX) :]
-                if suffix.isdigit():
-                    existing_ids.append(int(suffix))
-
-        next_id = max(existing_ids, default=0) + 1
+        # Create path for next available run (e.g. run_<N>)
+        next_id = _get_next_id(cls._RUN_DIR_PREFIX, log_dir)
         run_root_dir = log_dir / f"{cls._RUN_DIR_PREFIX}{next_id}"
 
         # Create directory structure
@@ -153,7 +150,7 @@ class RunManager:
 
         path = self[RUN_DIRS.metadata] / filename
 
-        return log_as_json(obj, path)
+        return _log_as_json(obj, path)
 
     def close(self) -> None:
         for tracker_dict in (self._jsonl_tracker_dict, self._tb_tracker_dict):
@@ -216,10 +213,11 @@ class BaseRunRegistry:
         - List all runs and their metadata (e.g., creation time).
     """
 
-    def __init__(self, db_path: str | Path, artifact_root: str | Path):
+    def __init__(self, db_path: str | Path, artifacts_root: str | Path):
         self.db_path = Path(db_path)
-        self.artifact_root = Path(artifact_root)
+        self.artifacts_root = Path(artifacts_root)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.artifacts_root.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     # --- API ---
@@ -234,11 +232,14 @@ class BaseRunRegistry:
         return RunManager(run_dir)
     
     def get_experiment_dir(self, experiment_name: str) -> Path:
-        return self.artifact_root / experiment_name
+        exp_dir = self.artifacts_root / experiment_name
+        if not exp_dir.exists():
+            raise FileNotFoundError(f"Experiment directory does not exist: {exp_dir}")
+        return exp_dir
 
     def get_runs_as_df(self) -> pd.DataFrame:
         query = (
-            "SELECT experiment_name, run_name, run_relpath, run_absolute_path, created_at "
+            "SELECT * "
             "FROM runs ORDER BY experiment_name, created_at"
         )
         with self._connect() as con:
@@ -246,7 +247,7 @@ class BaseRunRegistry:
 
         if not df.empty:
             created_at = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
-        df["created_at"] = created_at.dt.tz_convert(LOCAL_TIMEZONE)
+            df["created_at"] = created_at.dt.tz_convert(LOCAL_TIMEZONE)
 
         return df
     
@@ -255,17 +256,17 @@ class BaseRunRegistry:
         experiment_name: str,
         run_name: str,
     ) -> Path:
-        # Fetch run_relpath from DB and resolve full path
+        # Fetch artifacts_path from DB and resolve full path
         with self._connect() as con:
             row = con.execute(
-                "SELECT run_relpath FROM runs WHERE experiment_name=? AND run_name=?",
+                "SELECT artifacts_path FROM runs WHERE experiment_name=? AND run_name=?",
                 (experiment_name, run_name),
             ).fetchone()
 
         if row is None:
-            raise KeyError(f"Run not found: ({experiment_name}, {run_name})")
+            raise FileNotFoundError(f"Run not found: ({experiment_name}, {run_name})")
 
-        return self.artifact_root / row[0]
+        return self.artifacts_root / row[0]
 
     def start_run(
         self,
@@ -283,22 +284,22 @@ class BaseRunRegistry:
             )
 
         # Create a new run directory 
-        exp_dir = self.get_experiment_dir(experiment_name)
+        exp_dir = self.artifacts_root / experiment_name
         exp_dir.mkdir(parents=True, exist_ok=True)
         run_manager = RunManager.create_new_run_dir(exp_dir)
         
         # Validate the run directory is under the artifact root
         run_absolute_path = run_manager.root.resolve()
         try:
-            run_relpath = run_absolute_path.relative_to(self.artifact_root)
+            artifacts_path = run_absolute_path.relative_to(self.artifacts_root)
         except ValueError:
             run_manager.root.rmdir()
             raise ValueError(
-                f"Run directory {run_absolute_path} must be under artifact_root {self.artifact_root}"
+                f"Run directory {run_absolute_path} must be under artifacts_root {self.artifacts_root}"
             )
 
         # Register the new run in the DB
-        self._register(experiment_name, run_name, run_relpath, run_absolute_path)
+        self._register(experiment_name, run_name, artifacts_path, run_absolute_path)
 
         return run_manager
 
@@ -306,18 +307,11 @@ class BaseRunRegistry:
         self,
         experiment_name: str,
         run_name: str,
-        delete_artifacts: bool = True,
         confirm: bool = True,
     ) -> None:
-        # Validate run_dir
+        
         run_dir = self.get_run_dir(experiment_name, run_name).resolve()
-        try:
-            run_dir.relative_to(self.artifact_root.resolve())
-        except ValueError:
-            raise ValueError(
-                f"Run directory {run_dir} must be under artifact_root {self.artifact_root}"
-            )
-
+        
         # Confirmation prompt
         if confirm:
             response = input(
@@ -329,7 +323,7 @@ class BaseRunRegistry:
                 return
 
         # Delete Run's artifacts
-        if delete_artifacts and run_dir.exists():
+        if run_dir.exists():
             shutil.rmtree(run_dir)
 
         # Delete Run from DB
@@ -343,16 +337,15 @@ class BaseRunRegistry:
     def delete_experiment(
         self,
         experiment_name: str,
-        delete_artifacts: bool = True,
         confirm: bool = True,
     ) -> None:
         # Validate experiment dir
         exp_dir = self.get_experiment_dir(experiment_name).resolve()
         try:
-            exp_dir.relative_to(self.artifact_root.resolve())
+            exp_dir.relative_to(self.artifacts_root.resolve())
         except ValueError:
             raise ValueError(
-                f"Experiment directory {exp_dir} must be under artifact_root {self.artifact_root}"
+                f"Experiment directory {exp_dir} must be under artifacts_root {self.artifacts_root}"
             )
 
         # Confirmation prompt
@@ -366,7 +359,7 @@ class BaseRunRegistry:
                 return
 
         # Delete all run artifacts for the experiment
-        if delete_artifacts and exp_dir.exists():
+        if exp_dir.exists():
             shutil.rmtree(exp_dir)
 
         # Remove all runs for this experiment from the DB
@@ -387,10 +380,10 @@ class BaseRunRegistry:
             CREATE TABLE IF NOT EXISTS runs (
                 experiment_name    TEXT NOT NULL,
                 run_name           TEXT NOT NULL,
-                run_relpath        TEXT NOT NULL,
+                artifacts_path     TEXT NOT NULL,
                 run_absolute_path  TEXT NOT NULL,
                 created_at         TEXT NOT NULL,
-                metadata           TEXT,
+                other_data         TEXT,
                 PRIMARY KEY (experiment_name, run_name)
             );
             """)
@@ -404,12 +397,12 @@ class BaseRunRegistry:
             ).fetchone()
         return row is not None
 
-    def _run_relpath_exists(self, run_relpath: str | Path) -> bool:
-        run_relpath = str(Path(run_relpath).as_posix())
+    def _artifacts_path_exists(self, artifacts_path: str | Path) -> bool:
+        artifacts_path = str(Path(artifacts_path).as_posix())
         with self._connect() as con:
             row = con.execute(
-                "SELECT 1 FROM runs WHERE run_relpath=?",
-                (run_relpath,),
+                "SELECT 1 FROM runs WHERE artifacts_path=?",
+                (artifacts_path,),
             ).fetchone()
         return row is not None
 
@@ -417,18 +410,18 @@ class BaseRunRegistry:
         self,
         experiment_name: str,
         run_name: str,
-        run_relpath: str | Path,
+        artifacts_path: str | Path,
         run_absolute_path: str | Path,
     ) -> None:
         # Validate run does not already exist (by name or path)
         if self._run_exists(experiment_name, run_name):
             raise ValueError(f"Run already exists: ({experiment_name}, {run_name}).")
         
-        # Validate run_relpath is unique (no other run has the same relative path)
-        run_relpath = str(Path(run_relpath).as_posix())
+        # Validate artifacts_path is unique (no other run has the same relative path)
+        artifacts_path = str(Path(artifacts_path).as_posix())
         run_absolute_path = str(Path(run_absolute_path))
-        if self._run_relpath_exists(run_relpath):
-            raise ValueError(f"Run path already registered: {run_relpath}")
+        if self._artifacts_path_exists(artifacts_path):
+            raise ValueError(f"Run path already registered: {artifacts_path}")
         
         # Register the run in the DB
         created_at = datetime.now(ZoneInfo(LOCAL_TIMEZONE)).isoformat()
@@ -438,28 +431,271 @@ class BaseRunRegistry:
                 INSERT INTO runs (
                     experiment_name, 
                     run_name, 
-                    run_relpath, 
+                    artifacts_path, 
                     run_absolute_path, 
                     created_at
                 ) 
                 VALUES (?,?,?,?,?)
                 """,
-                (experiment_name, run_name, run_relpath, run_absolute_path, created_at),
+                (experiment_name, run_name, artifacts_path, run_absolute_path, created_at),
             )
             con.commit()
 
 
 # -----------------------------
-# GOOGLE DRIVE CONFIGS
+# BASE DATA REGISTRY
+# -----------------------------
+class BaseDataRegistry:
+    """
+    Registry for dataset artifacts stored under a datasets/ directory.
+
+    Tracks dataset metadata in an SQLite DB.
+    """
+
+    _DATASET_PREFIX = "dataset_"
+
+    def __init__(self, db_path: str | Path, datasets_root: str | Path):
+        self.db_path = Path(db_path)
+        self.datasets_root = Path(datasets_root)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.datasets_root.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    # --- API ---
+    def get_datasets_as_df(self) -> pd.DataFrame:
+        query = (
+            "SELECT * "
+            "FROM datasets ORDER BY dataset_name, created_at"
+        )
+        
+        with self._connect() as con:
+            df = pd.read_sql_query(query, con)
+
+        if not df.empty:
+            created_at = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
+            df["created_at"] = created_at.dt.tz_convert(LOCAL_TIMEZONE)
+
+        return df
+    
+    def copy_dataset_to_local(
+        self,
+        dataset_path: str | Path,
+        local_path: str | Path,
+        overwrite: bool = False,
+    ) -> tuple[Path, Path]:
+        """
+        Copy train.bin and eval.bin from a dataset directory to a local directory.
+        """
+        src_dir = Path(dataset_path)
+        if not src_dir.is_absolute():
+            src_dir = (self.datasets_root / src_dir).resolve()
+        else:
+            src_dir = src_dir.resolve()
+
+        train_src = src_dir / DATA_FILES.train_tokens
+        eval_src = src_dir / DATA_FILES.eval_tokens
+
+        if not train_src.exists():
+            raise FileNotFoundError(f"Train bin not found: {train_src}")
+        if not eval_src.exists():
+            raise FileNotFoundError(f"Eval bin not found: {eval_src}")
+
+        dst_dir = Path(local_path).expanduser().resolve()
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        train_dst = dst_dir / DATA_FILES.train_tokens
+        eval_dst = dst_dir / DATA_FILES.eval_tokens
+
+        if train_dst.exists() and not overwrite:
+            raise FileExistsError(f"Destination already exists: {train_dst}")
+        if eval_dst.exists() and not overwrite:
+            raise FileExistsError(f"Destination already exists: {eval_dst}")
+
+        if train_dst.exists():
+            train_dst.unlink()
+        if eval_dst.exists():
+            eval_dst.unlink()
+
+        shutil.copy2(train_src, train_dst)
+        shutil.copy2(eval_src, eval_dst)
+
+        return train_dst, eval_dst
+
+    def find_dataset_path(
+        self,
+        dataset_name: str,
+        dataset_config: str | None = None,
+        train_split: str | None = None,
+        eval_split: str | None = None,
+        raise_if_not_found: bool = True,
+    ) -> Path | None:
+        """
+        Find dataset_path from metadata and copy train/eval bins to local_path.
+        """
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT dataset_path FROM datasets
+                WHERE dataset_name=? AND dataset_config IS ?
+                  AND train_split IS ? AND eval_split IS ?
+                """,
+                (dataset_name, dataset_config, train_split, eval_split),
+            ).fetchone()
+
+        if (row is None) and raise_if_not_found:
+            raise FileNotFoundError(
+                "Dataset not found for metadata: "
+                f"({dataset_name}, {dataset_config}, {train_split}, {eval_split})"
+            )
+        
+        return self.datasets_root / Path(row[0]) if row is not None else None
+    
+    def register_dataset(
+        self,
+        src_path_train_bin: str | Path,
+        src_path_eval_bin: str | Path,
+        dataset_name: str,
+        dataset_config: str | None = None,
+        train_split: str | None = None,
+        eval_split: str | None = None,
+    ) -> Path:
+        """
+        Copy train/eval memmaps into datasets/ and record metadata in the DB.
+        """
+        # Validate dataset with same metadata doesn't already exist
+        existing_path = self.find_dataset_path(
+            dataset_name,
+            dataset_config,
+            train_split,
+            eval_split,
+            raise_if_not_found=False,
+        )     
+        if existing_path is not None:
+            raise FileExistsError(f"Dataset with the same metadata already exists at: {existing_path}")
+
+        # Validate source paths exist
+        src_train = Path(src_path_train_bin).expanduser().resolve()
+        src_eval = Path(src_path_eval_bin).expanduser().resolve()
+        if not src_train.exists():
+            raise FileNotFoundError(f"Train bin not found: {src_train}")
+        if not src_eval.exists():
+            raise FileNotFoundError(f"Eval bin not found: {src_eval}")
+
+        # Create a new dataset directory with an auto-incremented name like dataset_1, dataset_2, etc.
+        dataset_path = self._make_dataset_path()
+
+        # Copy memmaps into dataset directory 
+        # (note: these can be large files, so we use copy2 to preserve metadata and be efficient when possible)
+        shutil.copy2(src_train, dataset_path / DATA_FILES.train_tokens)
+        shutil.copy2(src_eval, dataset_path / DATA_FILES.eval_tokens)
+
+        # Register the dataset in the DB with its metadata and relative path
+        created_at = datetime.now(ZoneInfo(LOCAL_TIMEZONE)).isoformat()
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO datasets (
+                    dataset_name,
+                    dataset_config,
+                    train_split,
+                    eval_split,
+                    dataset_path,
+                    created_at
+                )
+                VALUES (?,?,?,?,?,?)
+                """,
+                (
+                    dataset_name,
+                    dataset_config,
+                    train_split,
+                    eval_split,
+                    str(dataset_path.relative_to(self.datasets_root)),
+                    created_at,
+                ),
+            )
+            con.commit()
+
+        return dataset_path
+
+    def delete_dataset(
+        self,
+        dataset_path: str | Path,
+        confirm: bool = True,
+    ) -> None:
+        """
+        Delete a dataset directory and its DB row.
+        """
+        path = Path(dataset_path)
+        rel_path = path
+        if path.is_absolute():
+            rel_path = path.relative_to(self.datasets_root)
+
+        if confirm:
+            response = input(
+                f"Are you sure you want to delete dataset at '{rel_path}'? "
+                "Type 'y' or 'yes' to confirm: "
+            )
+            if response.strip().lower() not in ("y", "yes"):
+                print("Deletion cancelled.")
+                return
+
+        abs_path = self.datasets_root / rel_path
+        if abs_path.exists():
+            shutil.rmtree(abs_path)
+
+        with self._connect() as con:
+            con.execute(
+                "DELETE FROM datasets WHERE dataset_path=?",
+                (str(rel_path),),
+            )
+            con.commit()
+
+    # --- Internal DB methods ---
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
+    def _init_db(self) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS datasets (
+                    dataset_name   TEXT NOT NULL,
+                    dataset_config TEXT,
+                    train_split    TEXT,
+                    eval_split     TEXT,
+                    dataset_path   TEXT NOT NULL,
+                    created_at     TEXT NOT NULL
+                );
+                """
+            )
+            con.commit()
+
+    def _make_dataset_path(self) -> Path:
+
+        # Find next available id (e.g. dataset_<N>)
+        next_id = _get_next_id(self._DATASET_PREFIX, self.datasets_root)
+
+        # Create dataset directory
+        dataset_path = self.datasets_root / f"{self._DATASET_PREFIX}{next_id}"
+        dataset_path.mkdir(parents=True, exist_ok=True)
+
+        return dataset_path
+
+
+# -----------------------------
+# GOOGLE DRIVE REGISTRIES
 # -----------------------------
 @dataclass
 class GoogleDriveConfigs:
-    drive_subdir: str = GOOGLE_DRIVE_DEFAULTS.drive_subdir
-    data_subdir: str = GOOGLE_DRIVE_DEFAULTS.data_subdir
     mountpoint: str | Path | None = None
-    drive_root_name: str | None = GOOGLE_DRIVE_DEFAULTS.drive_root_name
-    db_name: str = GOOGLE_DRIVE_DEFAULTS.db_name
-    artifact_subdir: str = GOOGLE_DRIVE_DEFAULTS.artifact_subdir
+    drive_root_name: str | None = None # Will resolve to "{desktop_mountpoint}/{drive_subdir}" or "{colab_mountpoint}/MyDrive/{drive_subdir}" depending on environment
+    project_subdir: str = GOOGLE_DRIVE_DEFAULTS.project_subdir
+    run_registry_name: str = GOOGLE_DRIVE_DEFAULTS.run_registry_name
+    runs_db_name: str = GOOGLE_DRIVE_DEFAULTS.runs_db_name
+    runs_artifacts_subdir: str = GOOGLE_DRIVE_DEFAULTS.runs_artifacts_subdir
+    data_registry_name: str = GOOGLE_DRIVE_DEFAULTS.data_registry_name
+    datasets_db_name: str = GOOGLE_DRIVE_DEFAULTS.datasets_db_name
+    tokenized_datasets_subdir: str = GOOGLE_DRIVE_DEFAULTS.tokenized_datasets_subdir
     auto_mount: bool = True
     force_remount: bool = False
 
@@ -477,10 +713,13 @@ class GoogleDriveConfigs:
             self._mount_if_needed(force_remount=self.force_remount)
 
         self.drive_root = self._resolve_drive_root()
-        self.project_root = self.drive_root / self.drive_subdir
-        self.artifact_root = self.project_root / self.artifact_subdir
-        self.data_root = self.project_root / self.data_subdir
-        self.db_path = self.project_root / self.db_name
+        self.project_root = self.drive_root / self.project_subdir
+        self.run_registry = self.project_root / self.run_registry_name
+        self.runs_artifacts_root = self.run_registry / self.runs_artifacts_subdir
+        self.runs_db_path = self.run_registry / self.runs_db_name
+        self.data_registry = self.project_root / self.data_registry_name
+        self.datasets_db_path = self.data_registry / self.datasets_db_name
+        self.tokenized_datasets_root = self.data_registry / self.tokenized_datasets_subdir
 
     def _mount_if_needed(self, force_remount: bool = False) -> None:
         if self._drive_root_exists():
@@ -524,15 +763,16 @@ class GoogleDriveConfigs:
         )
 
 
-# -----------------------------
-# GOOGLE DRIVE RUN REGISTRY
-# -----------------------------
 class GoogleDriveRunRegistry(BaseRunRegistry):
     """
-    Wrapper around BaseRunRegistry that stores the registry + artifacts in Google Drive.
+    Wrapper around BaseRunRegistry that stores the runs + artifacts in Google Drive.
 
     In Colab, it can mount Drive via OAuth using google.colab.drive.mount.
     Locally, set auto_mount=False and ensure the Drive folder is already mounted/synced.
+
+    Stores runs under:
+        - Metadata: <drive_root>/<project_subdir>/run_registry/<db_name>.db
+        - Artifacts: <drive_root>/<project_subdir>/run_registry/<artifacts_subdir>
     """
 
     def __init__(
@@ -541,18 +781,18 @@ class GoogleDriveRunRegistry(BaseRunRegistry):
         **overrides: Any,
     ) -> None:
         configs = configs or GoogleDriveConfigs(**overrides)
-        super().__init__(db_path=configs.db_path, artifact_root=configs.artifact_root)
+        self.project_root = configs.project_root
+        self.registry_root = configs.run_registry
+        super().__init__(db_path=configs.runs_db_path, artifacts_root=configs.runs_artifacts_root)
 
 
-# -----------------------------
-# GOOGLE DRIVE DATA REGISTRY
-# -----------------------------
-class GoogleDriveDataRegistry:
+class GoogleDriveDataRegistry(BaseDataRegistry):
     """
-    Manages a project data root in Google Drive at:
-        <drive_root>/<drive_subdir>/<data_subdir>
+    Data registry backed by Google Drive.
 
-    Useful for organizing datasets and artifacts alongside run registries.
+    Stores datasets under:
+        - Metadata: <drive_root>/<project_subdir>/data_registry/<db_name>
+        - Tokenized Datasets: <drive_root>/<project_subdir>/data_registry/<datasets_subdir>
     """
 
     def __init__(
@@ -560,84 +800,9 @@ class GoogleDriveDataRegistry:
         configs: GoogleDriveConfigs | None = None,
         **overrides: Any,
     ) -> None:
-        self.configs = configs or GoogleDriveConfigs(**overrides)
-        self.data_root = self.configs.data_root
-        self.data_root.mkdir(parents=True, exist_ok=True)
+        configs = configs or GoogleDriveConfigs(**overrides)
+        self.project_root = configs.project_root
+        self.registry_root = configs.data_registry
+        super().__init__(db_path=configs.datasets_db_path, datasets_root=configs.tokenized_datasets_root)
 
-    def get_data_root(self) -> Path:
-        return self.data_root
-
-    def get_dataset_dir(self, name: str) -> Path:
-        path = self.data_root / name
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def copy_local_to_data_root(
-        self,
-        local_path: str | Path,
-        relative_path: str | Path,
-        *,
-        overwrite: bool = False,
-    ) -> Path:
-        """
-        Copy a local file or directory into data_root at the given relative path.
-
-        Works for both local and Colab since Drive is mounted to the filesystem.
-        """
-        src = Path(local_path).expanduser().resolve()
-        dst = (self.data_root / relative_path).expanduser().resolve()
-
-        if not src.exists():
-            raise FileNotFoundError(f"Source not found: {src}")
-
-        if dst.exists():
-            if not overwrite:
-                raise FileExistsError(f"Destination already exists: {dst}")
-            if dst.is_dir():
-                shutil.rmtree(dst)
-            else:
-                dst.unlink()
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        if src.is_dir():
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-
-        return dst
-
-    def copy_data_root_to_local(
-        self,
-        relative_path: str | Path,
-        local_path: str | Path,
-        *,
-        overwrite: bool = False,
-    ) -> Path:
-        """
-        Copy a file or directory from data_root to a local destination path.
-
-        Works for both local and Colab since Drive is mounted to the filesystem.
-        """
-        src = (self.data_root / relative_path).expanduser().resolve()
-        dst = Path(local_path).expanduser().resolve()
-
-        if not src.exists():
-            raise FileNotFoundError(f"Source not found: {src}")
-
-        if dst.exists():
-            if not overwrite:
-                raise FileExistsError(f"Destination already exists: {dst}")
-            if dst.is_dir():
-                shutil.rmtree(dst)
-            else:
-                dst.unlink()
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        if src.is_dir():
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-
-        return dst
+    

@@ -4,15 +4,10 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 import pandas as pd
 from pathlib import Path
+from torch.utils.tensorboard.writer import SummaryWriter
 from typing import Any
 
 from scaling_llms.constants import METRIC_SCHEMA
-
-# Try TensorBoard import
-try:
-    from torch.utils.tensorboard.writer import SummaryWriter
-except ImportError:
-    SummaryWriter = None
 
 
 # -------------------------
@@ -90,7 +85,6 @@ class TensorBoardTracker(StepTracker):
         self,
         log_dir: Path | None,
         name: str,
-        subdir: str | None = "tb",
     ):
         super().__init__(log_dir=log_dir, name=name)
         self.w = None
@@ -99,9 +93,8 @@ class TensorBoardTracker(StepTracker):
                 raise RuntimeError(
                     "TensorBoard not available (torch.utils.tensorboard.SummaryWriter import failed)."
                 )
-            tb_dir = (self.log_dir / subdir) if subdir is not None else self.log_dir
-            tb_dir.mkdir(parents=True, exist_ok=True)
-            self.w = SummaryWriter(str(tb_dir))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self.w = SummaryWriter(str(log_dir))
 
     def write(self, step: int, metric_name: str, value: Any) -> None:
         if not self.enabled:

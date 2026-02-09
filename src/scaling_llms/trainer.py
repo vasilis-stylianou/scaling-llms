@@ -8,8 +8,8 @@ from typing import Any
 import torch
 
 from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
-from scaling_llms.tracking.managers import RunManager
-from scaling_llms.utils.checkpoint import CheckpointManager
+from scaling_llms.tracking.registries import RunManager
+from scaling_llms.tracking.checkpoint import CheckpointManager
 from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.training import (
     infinite_loader,
@@ -164,8 +164,9 @@ class Trainer:
         
         # Init CheckpointManager
         if self.run is not None:
+            # Attach ckpt manager to the active run's checkpoint dir
             self.ckpt_manager = CheckpointManager(
-                self.run[RUN_DIRS.checkpoints],
+                self.run[RUN_DIRS.checkpoints], 
                 self.model,
                 self.optimizer,
                 self.scaler,
@@ -222,7 +223,7 @@ class Trainer:
 
         # Configure Trainer's state
         ckpt_path = run[RUN_DIRS.checkpoints] / ckpt_name
-        trainer_state = trainer.checkpoint_manager.load(ckpt_path, strict=strict)
+        trainer_state = trainer.ckpt_manager.load(ckpt_path, strict=strict)
         trainer.load_state_dict(trainer_state)
 
         return trainer
