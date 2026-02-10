@@ -35,4 +35,15 @@ if _in_colab():
 else:
     os.environ["SCALING_LLMS_ENV"] = "local"
     print("Working Environment: local")
+    try:
+        from IPython import get_ipython # type: ignore
+
+        ip = get_ipython()
+        if ip:
+            ip.run_line_magic("load_ext", "autoreload")
+            ip.run_line_magic("autoreload", "2")
+            print("Enabled autoreload")
+    except Exception:
+        pass
     print("Not in Colab, skipping setup")
+    
