@@ -11,6 +11,8 @@ def _in_colab() -> bool:
         or ("google.colab" in sys.modules)
     )
 
+script_dir = Path.cwd()
+
 if _in_colab():
     os.environ["SCALING_LLMS_ENV"] = "colab"
     print("Working Environment: colab")
@@ -43,7 +45,9 @@ else:
             ip.run_line_magic("load_ext", "autoreload")
             ip.run_line_magic("autoreload", "2")
             print("Enabled autoreload")
-    except Exception:
+    except Exception:  # type: ignore
         pass
     print("Not in Colab, skipping setup")
-    
+
+# Delete the setup script after running 
+(script_dir / os.path.basename(__file__)).unlink()
