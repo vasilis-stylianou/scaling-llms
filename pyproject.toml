@@ -21,7 +21,10 @@ dependencies = [
     "tiktoken (>=0.7.0,<1.0.0)",
     "torch (==2.2.2)",
     "torchvision (==0.17.2)",
-    "torchaudio (==2.2.2)"
+    "torchaudio (==2.2.2)",
+    "ipywidgets (>=8.1.8,<9.0.0)",
+    "jupyter (>=1.1.1,<2.0.0)",
+    "pytest (>=9.0.2,<10.0.0)"
 ]
 
 

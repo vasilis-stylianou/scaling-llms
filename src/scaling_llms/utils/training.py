@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from scaling_llms.utils.timer import DeviceTimer
 
 
-def infinite_loader(loader):
+def create_infinite_loader(loader):
     while True:
         for batch in loader:
             yield batch

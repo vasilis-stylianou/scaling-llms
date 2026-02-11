@@ -619,12 +619,25 @@ class BaseDataRegistry:
 
     def delete_dataset(
         self,
-        dataset_path: str | Path,
+        dataset_path: str | Path = None,
+        dataset_name: str | None = None,
+        dataset_config: str | None = None,
+        train_split: str | None = None,
+        eval_split: str | None = None,
         confirm: bool = True,
     ) -> None:
         """
         Delete a dataset directory and its DB row.
         """
+        if dataset_path is None:
+            dataset_path = self.find_dataset_path(
+                dataset_name=dataset_name,
+                dataset_config=dataset_config,
+                train_split=train_split,
+                eval_split=eval_split,
+                raise_if_not_found=False,
+            )
+
         path = Path(dataset_path)
         rel_path = path
         if path.is_absolute():

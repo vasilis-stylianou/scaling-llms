@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import tiktoken
@@ -176,21 +176,19 @@ def build_memmap_tokens(
 # ============================================================
 def load_text_splits_from_hf(
     dataset_name: str,
-    train_split: str | None = None,
-    eval_split: str | None = None,
+    train_split: str,
+    eval_split: str,
     dataset_config: str | None = None,
-    dataset_revision: str | None = None,
     cache_dir: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     
     kwargs = dict(
         path=dataset_name,
         name=dataset_config,
-        revision=dataset_revision,
         cache_dir=cache_dir,
     )
-    train_ds = load_dataset(split=train_split or "train", **kwargs)  # type: ignore[index]
-    eval_ds = load_dataset(split=eval_split or "validation", **kwargs)  # type: ignore[index]
+    train_ds = load_dataset(split=train_split, **kwargs)  # type: ignore[index]
+    eval_ds = load_dataset(split=eval_split, **kwargs)  # type: ignore[index]
     train_texts = [x["text"] for x in train_ds]  # type: ignore[index]
     eval_texts = [x["text"] for x in eval_ds]  # type: ignore[index]
 
@@ -301,7 +299,7 @@ HF_DATASET_NAMES = Literal[
     "openwebtext"
 ]
 
-@dataclass(frozen=True)
+@dataclass
 class DataConfig:
 
     dataset_name: HF_DATASET_NAMES
@@ -309,10 +307,8 @@ class DataConfig:
     train_batch_size: int 
     eval_batch_size: int 
 
-    # Data and cache directories (can be shared across datasets and runs)
+    # Data dir to setup cache directories for HF datasets and tokenized memmaps.
     local_data_dir: Path = LOCAL_DATA_DIR
-    hf_cache_dir: Path = LOCAL_DATA_DIR / HF_CACHE_DIR_NAME
-    tokenized_cache_dir: Path = LOCAL_DATA_DIR / TOKENIZED_CACHE_DIR_NAME
 
     # Training budget (tokens) + resume cursor (samples)
     train_tokens_budget: int = 1_000_000
@@ -322,13 +318,18 @@ class DataConfig:
     num_workers: int = 0
 
     # Optional slicing and revision for HuggingFace datasets
-    train_split: str | None = None
-    eval_split: str | None = None
+    train_split: str | None = "train"
+    eval_split: str | None = "test"
     dataset_config: str | None = None
 
     seed: int = 1234
 
     def __post_init__(self):
+        self.train_split = self.train_split or "train"
+        self.eval_split = self.eval_split or "test"
+        self.hf_cache_dir = Path(self.local_data_dir) / HF_CACHE_DIR_NAME
+        self.tokenized_cache_dir = Path(self.local_data_dir) / TOKENIZED_CACHE_DIR_NAME
+
         self._configure_local_mmap_paths()
         self._validate_num_samples()
 
@@ -359,7 +360,7 @@ class DataConfig:
 # ============================================================
 # DATALOADER FACTORY
 # ============================================================
-def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
+def get_dataloaders(cfg: DataConfig, **gdrive_overrides) -> tuple[DataLoader, DataLoader, dict[str, Any]]:
     """
     Raw texts are downloaded and cached locally in `hf_cache_dir`
     Tokenized memmaps are stored in `tokenized_cache_dir` and copied to Google Drive for persistence.
@@ -368,8 +369,13 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
     """
     set_determinism(cfg.seed)
 
+    encode_fn, eos_id, vocab_size = make_gpt2_tokenizer()
+
+    # Use smallest unsigned dtype that can represent all token ids to save memory
+    dtype = np.uint16 if vocab_size <= 65535 else np.uint32
+    
     # Init Google Drive data registry for managing data paths and copying between local and drive
-    data_registry = GoogleDriveDataRegistry()
+    data_registry = GoogleDriveDataRegistry(**gdrive_overrides)
     gdrive_dataset_path = data_registry.find_dataset_path(
         dataset_name=cfg.dataset_name,
         dataset_config=cfg.dataset_config,
@@ -378,8 +384,11 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
         raise_if_not_found=False,   
     )
     
-    # SKIP Steps 1-2 if memmaps already exist in Google Drive
-    if (gdrive_dataset_path is None) or (not gdrive_dataset_path.exists()):
+    # SKIP Steps 1-2 if memmaps already exist in Data Registry
+    if (gdrive_dataset_path is not None) and (gdrive_dataset_path.exists()):
+        print("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
+    else:
+        print("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
 
         # Ensure local dataset cache size does not exceed maximum allowed size
         for cache_dir in [cfg.hf_cache_dir, cfg.tokenized_cache_dir]:
@@ -393,26 +402,22 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
         # --- STEP 1: Load raw text splits (optionally sliced) ---
         # NOTE: if not using HuggingFace datasets, you can condition on (cfg.dataset_name in HF_DATASET_NAMES)
         # and implement your own loading logic here to produce train_texts and eval_texts as lists of strings.
+        print("Loading raw text splits from HuggingFace...")
         train_texts, eval_texts = load_text_splits_from_hf(
             dataset_name=cfg.dataset_name,
             train_split=cfg.train_split,
             eval_split=cfg.eval_split,
             dataset_config=cfg.dataset_config,
-            dataset_revision=cfg.dataset_revision,
             cache_dir=cfg.hf_cache_dir,
         )   
 
         # --- STEP 2: Tokenization ---
-        encode_fn, eos_id, vocab_size = make_gpt2_tokenizer()
-
-        # Use smallest unsigned dtype that can represent all token ids to save memory
-        dtype = np.uint16 if vocab_size <= 65535 else np.uint32
-
         # Tokenize to memmap once and reuse forever 
         # (efficient random access without loading all tokens into RAM)
         # Note: for large datasets, this may take time and disk space on first run,
         # but subsequent runs will be fast and efficient due to memory-mapping.
         for mmap_path,texts in [(cfg.local_train_mmap_path, train_texts), (cfg.local_eval_mmap_path, eval_texts)]:
+            print(f"Tokenizing texts and building memmap at {mmap_path}...")
             build_memmap_tokens(
                 token_mmap_path=mmap_path,
                 texts=texts,
@@ -421,7 +426,8 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
                 dtype=dtype,
             )
 
-        # Copy local memmaps to Google Drive
+        # Copy local memmaps to Data Registry
+        print("Registering token memmaps to Data Registry...")
         gdrive_dataset_path = data_registry.register_dataset(
             src_path_train_bin=cfg.local_train_mmap_path,
             src_path_eval_bin=cfg.local_eval_mmap_path,
@@ -432,10 +438,13 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
         )
 
     # --- STEP 3: Create token buffers for training and evaluation ---
-    if (not cfg.local_train_mmap_path.exists()) and (not cfg.local_eval_mmap_path.exists()):
-        print("Memmaps not found locally, copying locally from Google Drive...")
-        data_registry.copy_dataset_to_local(gdrive_dataset_path, cfg.local_train_mmap_path.parent)
+    if cfg.local_train_mmap_path.exists() and cfg.local_eval_mmap_path.exists():
+        print("Memmaps already exist locally, skipping copy from Data Registry.")
+    else: 
+        print("Memmaps not found locally, copying locally from Data Registry...")
+        data_registry.copy_dataset_to_local(gdrive_dataset_path, cfg.local_train_mmap_path.parent)        
 
+    print(f"Loading token memmaps from {cfg.local_train_mmap_path.parent}...")
     train_tokens_buffer = np.memmap(cfg.local_train_mmap_path, mode="r", dtype=dtype)
     eval_tokens_buffer = np.memmap(cfg.local_eval_mmap_path, mode="r", dtype=dtype)
 
@@ -443,6 +452,7 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
     # 1 sample == 1 sequence of length seq_len
 
     # Train DS: deterministic random windows, with global sample index offset for resume
+    print("Creating deterministic training dataset with random windows...")
     deterministic_train_ds = DeterministicTokenWindows(
         tokens_mmap_buffer=train_tokens_buffer,
         seq_len=cfg.seq_len,
@@ -452,6 +462,7 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
     train_ds = OffsetDataset(deterministic_train_ds, offset_start=cfg.start_sample_idx)
 
     # Eval DS: sequential non-overlapping chunks
+    print("Creating sequential evaluation dataset with non-overlapping chunks...")
     eval_ds = SequentialTokenChunks(eval_tokens_buffer, seq_len=cfg.seq_len)
 
     # --- STEP 5: Create PyTorch dataloaders ---
@@ -464,7 +475,13 @@ def get_dataloaders(cfg: DataConfig) -> tuple[DataLoader, DataLoader]:
     train_dl = DataLoader(train_ds, batch_size=cfg.train_batch_size, **dl_kwargs)
     eval_dl = DataLoader(eval_ds, batch_size=cfg.eval_batch_size, **dl_kwargs)
 
-    return train_dl, eval_dl
+    print(f"Prepared dataloaders with {len(train_ds)} training samples and {len(eval_ds)} evaluation samples.")
+
+    info = {
+        "vocab_size": vocab_size,
+        "eos_id": eos_id,
+    }
+    return train_dl, eval_dl, info
 
 
 

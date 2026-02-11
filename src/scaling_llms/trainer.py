@@ -12,7 +12,7 @@ from scaling_llms.tracking.registries import RunManager
 from scaling_llms.tracking.checkpoint import CheckpointManager
 from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.training import (
-    infinite_loader,
+    create_infinite_loader,
     compute_grad_zero_frac,
     compute_grad_norm,
     compute_param_norm,
@@ -145,7 +145,7 @@ class Trainer:
         self.run = run
 
         # TODO 
-        self.train_iter = infinite_loader(train_dl)
+        self.train_iter = create_infinite_loader(train_dl)
 
         # Configure training objects
         self.scaler = torch.cuda.amp.GradScaler(
