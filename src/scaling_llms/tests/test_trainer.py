@@ -1,0 +1,352 @@
+import pytest
+import torch
+from dataclasses import asdict
+from torch.utils.data import DataLoader, TensorDataset
+
+from scaling_llms.trainer import Trainer, TrainerConfig
+from scaling_llms.models import GPTModel, GPTConfig
+from scaling_llms.tracking.registries import RunManager, log_as_json
+from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
+
+
+VOCAB_SIZE = 100
+SEQ_LEN = 16
+N_EMBD = 32
+N_LAYER = 2
+N_HEAD = 2
+NUM_STEPS = 5
+gpt_cfg = GPTConfig(
+    vocab_size=VOCAB_SIZE,
+    seq_len=SEQ_LEN,
+    n_embd=N_EMBD,
+    n_layer=N_LAYER,
+    n_head=N_HEAD,
+)
+
+
+# ============================================================
+# FIXTURES
+# ============================================================
+@pytest.fixture
+def dummy_model():
+    """Small model for fast testing."""
+    torch.manual_seed(1234)
+    return GPTModel(gpt_cfg)
+
+
+@pytest.fixture
+def dummy_dataloader():
+    """Minimal dataloader for testing."""
+    # Create dummy data: (idx, targets)
+    torch.manual_seed(1234)
+    batch_size = 4
+    num_samples = 20
+    
+    idx = torch.randint(0, VOCAB_SIZE, (num_samples, SEQ_LEN))
+    targets = torch.randint(0, VOCAB_SIZE, (num_samples, SEQ_LEN))
+    
+    dataset = TensorDataset(idx, targets)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+
+@pytest.fixture
+def minimal_trainer_config():
+    """Minimal valid TrainerConfig for CPU training."""
+    return TrainerConfig(
+        num_steps=NUM_STEPS,
+        lr=1e-3,
+        device="cpu",
+    )
+
+
+@pytest.fixture
+def extended_trainer_config():
+    """TrainerConfig with logging/scheduler features enabled."""
+    return TrainerConfig(
+        num_steps=NUM_STEPS,
+        lr=1e-3,
+        device="cpu",
+        eval_log_freq=1,
+        ckpt_log_freq=1,
+        train_log_freq=1,
+        lr_schedule="linear",
+        warmup_steps=1,
+        min_lr_ratio=0.1,
+    )
+
+
+@pytest.fixture
+def run_manager(tmp_path):
+    """Create a temporary run directory for Trainer tests."""
+    return RunManager.create_new_run_dir(tmp_path / "runs")
+
+
+@pytest.fixture
+def trainer(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager):
+    """Create a default Trainer instance for tests."""
+    return Trainer(
+        cfg=minimal_trainer_config,
+        model=dummy_model,
+        train_dl=dummy_dataloader,
+        eval_dl=None,
+        run=run_manager,
+    )
+
+
+@pytest.fixture
+def extended_trainer(extended_trainer_config, dummy_model, dummy_dataloader, tmp_path):
+    """Trainer with eval, checkpointing, and LR scheduling enabled."""
+    run_manager = RunManager.create_new_run_dir(tmp_path / "runs")
+    return Trainer(
+        cfg=extended_trainer_config,
+        model=dummy_model,
+        train_dl=dummy_dataloader,
+        eval_dl=dummy_dataloader,
+        run=run_manager,
+    )
+
+
+# ============================================================
+# TESTS FOR TRAINERCONFIG
+# ============================================================
+def test_trainer_config_init():
+    """Test TrainerConfig initializes with required parameters."""
+    cfg = TrainerConfig(num_steps=100, lr=3e-4)
+    
+    # Check required params
+    assert cfg.num_steps == 100
+    assert cfg.lr == 3e-4
+    
+    # Check defaults are set
+    assert cfg.beta1 == 0.9
+    assert cfg.beta2 == 0.95
+    assert cfg.weight_decay == 0.1
+    assert cfg.accum_steps == 1
+    assert cfg.device in ("cpu", "cuda")
+    
+    # Check post_init configuration ran
+    assert cfg.device_name is not None
+    assert cfg.precision in ("fp32", "fp16", "bf16")
+
+
+def test_trainer_config_device_cpu():
+    """Test CPU device configuration."""
+    cfg = TrainerConfig(num_steps=10, lr=1e-3, device="cpu")
+    
+    assert cfg.device == "cpu"
+    assert cfg.precision == "fp32", "CPU should force FP32"
+    assert cfg.device_name == "cpu"
+
+
+def test_trainer_config_lr_scheduler_validation():
+    """Test learning rate scheduler validation."""
+    # Valid schedules
+    for schedule in ["none", "cosine", "linear"]:
+        cfg = TrainerConfig(num_steps=100, lr=1e-3, lr_schedule=schedule)
+        assert cfg.lr_schedule == schedule
+    
+    # Invalid schedule
+    with pytest.raises(ValueError, match="lr_schedule must be one of"):
+        TrainerConfig(num_steps=100, lr=1e-3, lr_schedule="invalid")
+
+
+def test_trainer_config_validation_errors():
+    """Test TrainerConfig raises errors for invalid parameters."""
+    # num_steps must be > 0
+    with pytest.raises(ValueError, match="num_steps must be > 0"):
+        TrainerConfig(num_steps=0, lr=1e-3)
+    
+    # lr must be > 0
+    with pytest.raises(ValueError, match="lr must be > 0"):
+        TrainerConfig(num_steps=10, lr=0)
+    
+    # warmup_steps must be >= 0
+    with pytest.raises(ValueError, match="warmup_steps must be >= 0"):
+        TrainerConfig(num_steps=100, lr=1e-3, warmup_steps=-1)
+    
+    # warmup_steps must be <= num_steps
+    with pytest.raises(ValueError, match="warmup_steps must be <= num_steps"):
+        TrainerConfig(num_steps=100, lr=1e-3, warmup_steps=200)
+    
+    # min_lr_ratio must be in [0,1]
+    with pytest.raises(ValueError, match="min_lr_ratio must be in"):
+        TrainerConfig(num_steps=100, lr=1e-3, min_lr_ratio=1.5)
+
+
+def test_trainer_config_json_roundtrip(tmp_path):
+    """Test TrainerConfig can be saved and loaded from JSON."""
+    # Create a config with non-default values
+    original_cfg = TrainerConfig(
+        num_steps=500,
+        lr=5e-4,
+        beta1=0.85,
+        beta2=0.99,
+        weight_decay=0.05,
+        precision="bf16",
+        accum_steps=4,
+        grad_clip_norm=0.5,
+        device="cpu",
+        lr_schedule="cosine",
+        warmup_steps=50,
+        min_lr_ratio=0.1,
+        track_metrics=False,
+        enable_tb=True,
+        train_log_freq=5,
+        net_log_freq=25,
+        sys_log_freq=50,
+        eval_log_freq=100,
+        ckpt_log_freq=200,
+        enable_cuda_timer=True,
+        seed=42,
+    )
+    
+    # Save to JSON
+    json_path = tmp_path / "trainer_config.json"
+    log_as_json(original_cfg, json_path)
+    
+    assert json_path.exists(), "JSON file should be created"
+    
+    # Load from JSON
+    loaded_cfg = TrainerConfig.from_json(json_path)
+    
+    # Check all fields match (excluding device_name which is set in __post_init__)
+    original_dict = asdict(original_cfg)
+    loaded_dict = asdict(loaded_cfg)
+    
+    for key in original_dict:
+        if key != "device_name":  # device_name is set in __post_init__
+            assert loaded_dict[key] == original_dict[key], (
+                f"Field '{key}' mismatch: {loaded_dict[key]} != {original_dict[key]}"
+            )
+    
+    # device_name should be set by __post_init__
+    assert loaded_cfg.device_name is not None
+
+
+# ============================================================
+# TESTS FOR TRAINER INITIALIZATION
+# ============================================================
+def test_trainer_init_state(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager, trainer):
+
+    assert trainer.cfg is minimal_trainer_config
+    assert trainer.model is dummy_model
+    assert trainer.train_dl is dummy_dataloader
+    assert trainer.eval_dl is None
+    assert trainer.run is run_manager
+    assert trainer.device == minimal_trainer_config.device
+
+    assert trainer.train_iter is not None
+    assert hasattr(trainer.train_iter, "__next__")
+
+    assert trainer.scaler is not None
+    assert isinstance(trainer.optimizer, torch.optim.AdamW)
+    assert trainer.lr_scheduler is None
+    assert trainer.ckpt_manager is not None
+    assert trainer.sys_logger is not None
+    assert trainer.sys_logger.name == "Trainer"
+
+    assert trainer.step_idx == 0
+    assert trainer.tokens_seen_total == 0
+    assert trainer.wall_timer is not None
+    assert trainer.cuda_timer is None
+
+
+def test_trainer_train_resume_logic(trainer):
+
+    # Train for NUM_STEPS
+    trainer.train() 
+    curr_step_idx = trainer.step_idx
+    assert curr_step_idx == NUM_STEPS
+    assert trainer.tokens_seen_total > 0
+
+    # Resume training for another (max_steps - NUM_STEPS)
+    # CASE 1: max_steps <= NUM_STEPS
+    with pytest.raises(ValueError, match="Training already complete"):
+        trainer.train(max_steps=NUM_STEPS)
+
+    # CASE 2: max_steps > NUM_STEPS
+    max_steps = 2 * NUM_STEPS - 1 
+    trainer.train(max_steps) 
+    assert (trainer.step_idx - curr_step_idx) == (max_steps - NUM_STEPS)
+
+
+def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager, trainer):
+
+    trainer.run.log_metadata(minimal_trainer_config, RUN_FILES.trainer_config, format="json")
+    trainer.train()
+
+    ckpt_path = trainer.save_checkpoint("roundtrip.pt")
+    assert ckpt_path.exists()
+
+    new_model = GPTModel(gpt_cfg)
+    resumed = Trainer.from_checkpoint(
+        run_manager.root,
+        "roundtrip.pt",
+        new_model,
+        train_dl=dummy_dataloader,
+        eval_dl=None,
+        strict=True,
+    )
+
+    assert resumed.step_idx == trainer.step_idx
+    assert resumed.tokens_seen_total == trainer.tokens_seen_total
+
+    for p1, p2 in zip(trainer.model.parameters(), resumed.model.parameters()):
+        assert torch.allclose(p1, p2)
+
+
+def test_trainer_state_dict_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager):
+    trainer = Trainer(
+        cfg=minimal_trainer_config,
+        model=dummy_model,
+        train_dl=dummy_dataloader,
+        eval_dl=None,
+        run=run_manager,
+    )
+
+    trainer.step_idx = 7
+    trainer.tokens_seen_total = 1234
+
+    state = trainer.state_dict()
+    new_trainer = Trainer(
+        cfg=minimal_trainer_config,
+        model=dummy_model,
+        train_dl=dummy_dataloader,
+        eval_dl=None,
+        run=run_manager,
+    )
+    new_trainer.load_state_dict(state)
+
+    assert new_trainer.step_idx == 7
+    assert new_trainer.tokens_seen_total == 1234
+
+
+def test_trainer_eval_logging_creates_metrics(extended_trainer):
+    trainer = extended_trainer
+
+    trainer.train(max_steps=2)
+
+    eval_metrics_path = trainer.run[RUN_DIRS.metrics] / f"{METRIC_CATS.eval}.jsonl"
+    assert eval_metrics_path.exists()
+    assert eval_metrics_path.read_text().strip() != ""
+
+
+def test_trainer_checkpointing_writes_files(extended_trainer):
+    trainer = extended_trainer
+
+    trainer.train(max_steps=2) # ckpt_log_freq = 1
+
+    latest_ckpt = trainer.run[RUN_DIRS.checkpoints] / "latest.pt"
+    step_ckpt = trainer.run[RUN_DIRS.checkpoints] / "step_1.pt"
+    assert latest_ckpt.exists()
+    assert step_ckpt.exists()
+
+
+def test_trainer_lr_scheduler_updates_lr(extended_trainer):
+    trainer = extended_trainer
+
+    start_lr = trainer.optimizer.param_groups[0]["lr"]
+    trainer.train(max_steps=3)
+    end_lr = trainer.optimizer.param_groups[0]["lr"]
+
+    assert end_lr != start_lr

@@ -35,7 +35,7 @@ def _json_default(o: Any):
         return list(o)
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
-def _log_as_json(obj, path) -> Path:
+def log_as_json(obj, path) -> Path:
     path = Path(path)
     if path.exists():
         return path
@@ -150,7 +150,7 @@ class RunManager:
 
         path = self[RUN_DIRS.metadata] / filename
 
-        return _log_as_json(obj, path)
+        return log_as_json(obj, path)
 
     def close(self) -> None:
         for tracker_dict in (self._jsonl_tracker_dict, self._tb_tracker_dict):

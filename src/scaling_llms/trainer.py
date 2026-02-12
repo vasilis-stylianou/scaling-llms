@@ -54,7 +54,7 @@ class TrainerConfig:
     ckpt_log_freq: int = -1
 
     # Timer
-    timer_mode: str | None = "wall" # "wall" (CPU), "cuda_async", "cuda_sync"
+    enable_cuda_timer: bool = False
 
     # Reproducibility
     seed: int = 1234
@@ -159,8 +159,9 @@ class Trainer:
         )
         self.lr_scheduler = make_lr_scheduler(self.optimizer, cfg)
 
-        # Init Timer
-        self.timer = make_timer(cfg)
+        # Init Timers
+        self.wall_timer = make_timer("wall")
+        self.cuda_timer = make_timer("cuda_sync") if (self.device == "cuda") and cfg.enable_cuda_timer else None
         
         # Init CheckpointManager
         if self.run is not None:
@@ -230,33 +231,42 @@ class Trainer:
 
 
     # --- PUBLIC API ---
-    def train(self, num_steps: int | None = None):
-        num_steps = num_steps or self.cfg.num_steps
-
+    def train(self, max_steps: int | None = None):
+        # Determine target total steps and remaining steps
+        target_total = self.cfg.num_steps if max_steps is None else max_steps
+        remaining_steps = target_total - self.step_idx
+        if remaining_steps <= 0:
+            raise ValueError(
+                f"Training already complete or beyond target. "
+                f"Current step_idx={self.step_idx}, target_total={target_total}. "
+                f"To continue training, pass max_steps > {self.step_idx}."
+            )
+        
         self.sys_logger.log_start(
+            model_params=f"{sum(p.numel() for p in self.model.parameters()):,}",
+            n_layer=self.model.cfg.n_layer,
+            n_embd=self.model.cfg.n_embd,
+            vocab_size=f"{self.model.cfg.vocab_size:,}",
             run_root=self.run.root,
             device=self.device,
             precision=self.cfg.precision,
-            num_steps=num_steps,
+            num_steps=remaining_steps,
             accum_steps=self.cfg.accum_steps,
             lr=self.cfg.lr,
+            step_idx=self.step_idx
         )
-
-        # Log configs for fresh runs
-        if self.step_idx == 0:
-            self._log_configs()
 
         # MAIN
         self.model.to(self.device)
-
-        for _ in range(num_steps):
+        for _ in range(remaining_steps):
             # Optimize
             train_metrics = self.optimizer_step()
 
             # Evaluate
             if (
                 (self.eval_dl is not None) and
-                (self.step_idx > 0) and 
+                (self.cfg.eval_log_freq > 0) and
+                (self.step_idx > 0) and  # Avoid logging eval metrics at step_idx=0
                 (self.step_idx % self.cfg.eval_log_freq == 0)
             ):
                 eval_metrics = self.evaluate(self.eval_dl)
@@ -270,10 +280,14 @@ class Trainer:
                 )
 
             # Checkpoint
-            # if (self.step_idx > 0) and (self.step_idx % self.cfg.ckpt_log_freq == 0):
-            #     self.save_checkpoint("latest.pt")
-            #     self.save_checkpoint(f"step_{self.step_idx}.pt")
-
+            if (
+                (self.ckpt_manager is not None) and 
+                (self.cfg.ckpt_log_freq > 0) and 
+                (self.step_idx > 0) and  # Avoid saving checkpoint at step_idx=0
+                (self.step_idx % self.cfg.ckpt_log_freq == 0)
+            ):
+                self.save_checkpoint("latest.pt")
+                self.save_checkpoint(f"step_{self.step_idx}.pt")
 
             # Update LR
             if self.lr_scheduler is not None:
@@ -282,9 +296,9 @@ class Trainer:
             # Advance global step index
             self.step_idx += 1
 
-        # Ensure last train step is logged
+        # Ensure last train step is always logged
         last_step = self.step_idx - 1
-        if (last_step % self.cfg.train_log_freq) != 0:
+        if (last_step > 0) and ((last_step % self.cfg.train_log_freq) != 0): 
             self._log_metrics(train_metrics, step=last_step)
 
         return
@@ -319,7 +333,7 @@ class Trainer:
         if self.ckpt_manager is None:
             raise RuntimeError("Cannot save checkpoint when Trainer.run is None.")
         
-        return self.checkpoint_manager.save(self.state_dict(), name)
+        return self.ckpt_manager.save(self.state_dict(), name)
 
     # --- TRAINING CORE ---
     def train_micro_step(self, idx, targets) -> torch.Tensor:
@@ -351,8 +365,10 @@ class Trainer:
         if self.device == "cuda":
             torch.cuda.reset_peak_memory_stats()
 
-        if self.timer is not None:
-            self.timer.start()
+        # Start timers
+        self.wall_timer.start()
+        if self.cuda_timer is not None:
+            self.cuda_timer.start()
 
         loss_sum: torch.Tensor = torch.zeros((), device=self.device) # accumulate losses on device
         tokens: int = 0
@@ -379,7 +395,11 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
 
         ## Network diagnostics (using the grads/params used by the optimizer)
-        if (self.step_idx > 0) and (self.step_idx % self.cfg.net_log_freq == 0):
+        if (
+            (self.cfg.net_log_freq > 0) and 
+            (self.step_idx > 0) and  # Avoid logging network diagnostics at step_idx=0
+            (self.step_idx % self.cfg.net_log_freq == 0)
+        ):
             cat2metrics[METRIC_CATS.network] = self._compute_network_diagnostics()
 
         # 4) Optimizer step
@@ -389,18 +409,27 @@ class Trainer:
         else:
             self.optimizer.step()
 
-        if self.timer is not None:
-            self.timer.stop()
+        # Stop timers
+        self.wall_timer.stop()
+        if self.cuda_timer is not None:
+            self.cuda_timer.stop()
 
         # 5) Post-step
         self.tokens_seen_total += tokens
 
         ## System Diagnostics
-        if (self.step_idx > 0) and (self.step_idx % self.cfg.sys_log_freq == 0):
+        if (
+            (self.cfg.sys_log_freq > 0) and 
+            (self.step_idx > 0) and  # Avoid logging system diagnostics at step_idx=0 
+            (self.step_idx % self.cfg.sys_log_freq == 0)
+        ):
             cat2metrics[METRIC_CATS.system] = self._compute_system_diagnostics(tokens)
 
         ## Training Metrics
-        if (self.step_idx % self.cfg.train_log_freq == 0):
+        if (
+            (self.cfg.train_log_freq > 0) and 
+            (self.step_idx % self.cfg.train_log_freq == 0)
+        ):
             cat2metrics[METRIC_CATS.train] = self._compute_training_metrics(loss_sum, tokens)
 
         # 6) Logging
@@ -417,17 +446,13 @@ class Trainer:
                 tokens_seen_total=m.get("tokens_seen_total"),
                 tokens_per_sec=(s.get("tokens_per_sec") if s else None),
                 step_ms=(s.get("step_ms") if s else None),
+                peak_alloc_gb=(s.get("peak_alloc_gb") if s else None),
             )
 
         return cat2metrics.get(METRIC_CATS.train, {})
 
     # --- INTERNALS ---
-    # LOGGING METHODS
-    def _log_configs(self):
-        if self.run is None:
-            return
-        self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
-        
+    # LOGGING METHODS        
     def _log_metrics(self, cat2metrics, step=None):
         if self.run is None:
             return
@@ -451,19 +476,12 @@ class Trainer:
         }
 
     def _compute_system_diagnostics(self, tokens):
+        # Wall time (always available)
+        wall_ms = self.wall_timer.elapsed_ms()
+        tokens_per_sec = tokens / (wall_ms / 1e3) if wall_ms > 0 else float("nan")
 
-        if self.timer is not None:
-            step_ms = self.timer.elapsed_ms()
-            tokens_per_sec = (
-                tokens / (step_ms / 1e3) 
-                if step_ms > 0 
-                else float("nan")
-            )
-        else:
-            step_ms = tokens_per_sec = float("nan")
-
-        return {
-            "step_ms": float(step_ms),
+        metrics = {
+            "step_ms": float(wall_ms),
             "tokens_per_sec": float(tokens_per_sec),
             "peak_alloc_gb": float(
                 torch.cuda.max_memory_allocated() / 1024**3
@@ -471,6 +489,15 @@ class Trainer:
                 else 0.0
             ),
         }
+
+        # CUDA time (only if enabled and on CUDA)
+        if self.cuda_timer is not None:
+            cuda_ms = self.cuda_timer.elapsed_ms()
+            cuda_tokens_per_sec = tokens / (cuda_ms / 1e3) if cuda_ms > 0 else float("nan")
+            metrics["cuda_step_ms"] = float(cuda_ms)
+            metrics["cuda_tokens_per_sec"] = float(cuda_tokens_per_sec)
+
+        return metrics
 
     def _compute_training_metrics(self, loss_sum: torch.Tensor, tokens: int) -> dict[str, Any]:
         nll = float((loss_sum / max(1, tokens)).item())

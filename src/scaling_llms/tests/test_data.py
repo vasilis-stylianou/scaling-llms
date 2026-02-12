@@ -53,7 +53,8 @@ def clean_data_registry_and_cache(dev_data_registry, base_configs):
 
 def test_data_loaders(base_configs, gdrive_overrides):
     cfg = DataConfig(**base_configs)
-    train_dl, eval_dl = get_dataloaders(cfg, **gdrive_overrides)
+    dl_dict = get_dataloaders(cfg, **gdrive_overrides)
+    train_dl, eval_dl = dl_dict["train"], dl_dict["eval"]
 
     # Verify number of training tokens
     expected_num_train_tokens = len(train_dl.dataset) * cfg.seq_len
@@ -172,7 +173,8 @@ def test_dataset_offset(base_configs, gdrive_overrides, dev_data_registry):
 
     # Create dataloaders with no offset
     cfg1 = DataConfig(**BASE_CONFIGS)
-    train_dl1, eval_dl1 = get_dataloaders(cfg1, **GDRIVE_OVERRIDES)
+    dl_dict = get_dataloaders(cfg1, **GDRIVE_OVERRIDES)
+    train_dl1, eval_dl1 = dl_dict["train"], dl_dict["eval"]
     train_iter = iter(train_dl1)
     train_batch_1 = next(train_iter)
     train_batch_2 = next(train_iter)
@@ -180,7 +182,8 @@ def test_dataset_offset(base_configs, gdrive_overrides, dev_data_registry):
     
     # Create dataloaders with offset equal to 'train_batch_size' samples
     cfg2 = DataConfig(**{**BASE_CONFIGS, "start_sample_idx": BASE_CONFIGS["train_batch_size"]})
-    train_dl2, eval_dl2 = get_dataloaders(cfg2, **GDRIVE_OVERRIDES)
+    dl_dict = get_dataloaders(cfg2, **GDRIVE_OVERRIDES)
+    train_dl2, eval_dl2 = dl_dict["train"], dl_dict["eval"]
     xb_train_offset1, yb_train_offset1 = next(iter(train_dl2))
     xb_eval_offset1, yb_eval_offset1 = next(iter(eval_dl2))   
 

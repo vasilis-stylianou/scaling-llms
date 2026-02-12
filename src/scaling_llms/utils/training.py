@@ -72,18 +72,16 @@ def make_autocast_context(device, precision: str):
         return torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
     return nullcontext()
 
-def make_timer(cfg) -> DeviceTimer | None:
-    if cfg.timer_mode is None:
-        return None
+def make_timer(timer_mode: str) -> DeviceTimer:
 
-    if cfg.timer_mode == "wall":
+    if timer_mode == "wall":
         return DeviceTimer(device="cpu", sync=False)
-    elif cfg.timer_mode == "cuda_async":
+    elif timer_mode == "cuda_async":
         return DeviceTimer(device="cuda", sync=False)
-    elif cfg.timer_mode == "cuda_sync":
+    elif timer_mode == "cuda_sync":
         return DeviceTimer(device="cuda", sync=True)
     else:
-        raise ValueError(f"Invalid timer_mode: {cfg.timer_mode}")
+        raise ValueError(f"Invalid timer_mode: {timer_mode}")
 
 
 # -----------------------------

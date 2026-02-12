@@ -48,6 +48,7 @@ class RunFileNames:
     trainer_config: str = "trainer_configs.json"
     data_config: str = "data_configs.json"
     model_config: str = "model_configs.json"
+    train_log: str = "train.log"
 
 @dataclass(frozen=True)
 class RunDirNames:

@@ -360,7 +360,7 @@ class DataConfig:
 # ============================================================
 # DATALOADER FACTORY
 # ============================================================
-def get_dataloaders(cfg: DataConfig, **gdrive_overrides) -> tuple[DataLoader, DataLoader, dict[str, Any]]:
+def get_dataloaders(cfg: DataConfig, **gdrive_overrides) -> dict[str, Any]:
     """
     Raw texts are downloaded and cached locally in `hf_cache_dir`
     Tokenized memmaps are stored in `tokenized_cache_dir` and copied to Google Drive for persistence.
@@ -481,7 +481,11 @@ def get_dataloaders(cfg: DataConfig, **gdrive_overrides) -> tuple[DataLoader, Da
         "vocab_size": vocab_size,
         "eos_id": eos_id,
     }
-    return train_dl, eval_dl, info
+    return {
+        "train": train_dl, 
+        "eval": eval_dl, 
+        "info": info
+    }
 
 
 

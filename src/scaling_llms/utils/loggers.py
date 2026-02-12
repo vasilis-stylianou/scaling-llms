@@ -2,30 +2,52 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+import zoneinfo
+
+from scaling_llms.constants import RUN_FILES, LOCAL_TIMEZONE
+
+
+class TimezoneFormatter(logging.Formatter):
+    """Custom formatter that converts timestamps to a specific timezone."""
+
+    def __init__(self, fmt: str = None, datefmt: str = None, timezone: str = LOCAL_TIMEZONE):
+        super().__init__(fmt, datefmt)
+        self.timezone = zoneinfo.ZoneInfo(timezone)
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=self.timezone)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def setup_root_logging(
     *,
     level: int = logging.INFO,
     stream=sys.stdout,
-    fmt: str = "%(message)s",
+    fmt: str = "%(asctime)s | %(message)s",
+    datefmt: str = "%Y-%m-%d %H:%M:%S",
     force: bool = True,
 ) -> None:
     """
     Works reliably in scripts + VSCode + Jupyter/Colab.
 
     - force=True replaces any existing handlers (needed in notebooks)
-    - fmt="%(message)s" removes INFO/level prefixes
+    - fmt includes timestamp with LOCAL_TIMEZONE
     """
+    formatter = TimezoneFormatter(fmt=fmt, datefmt=datefmt)
     try:
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(formatter)
         logging.basicConfig(
             level=level,
-            format=fmt,
-            handlers=[logging.StreamHandler(stream)],
+            handlers=[handler],
             force=force,  # Python 3.8+
         )
     except TypeError:
@@ -34,9 +56,9 @@ def setup_root_logging(
         root.setLevel(level)
         for h in list(root.handlers):
             root.removeHandler(h)
-        h = logging.StreamHandler(stream)
-        h.setFormatter(logging.Formatter(fmt))
-        root.addHandler(h)
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
 
 @dataclass(slots=True)
@@ -46,7 +68,8 @@ class BaseLogger:
     level: int = logging.INFO
     propagate: bool = True
     file_name: str | None = None  # if set, attach a file handler to log_dir/file_name
-    fmt: str = "%(message)s"
+    fmt: str = "%(asctime)s | %(message)s"
+    datefmt: str = "%Y-%m-%d %H:%M:%S"
 
     _logger: logging.Logger = dataclasses.field(init=False, repr=False)
     _file_handler: logging.Handler | None = dataclasses.field(default=None, init=False, repr=False)
@@ -66,7 +89,8 @@ class BaseLogger:
     def _attach_file_handler(self, path: Path) -> None:
         fh = logging.FileHandler(path, encoding="utf-8")
         fh.setLevel(self.level)
-        fh.setFormatter(logging.Formatter(self.fmt))
+        formatter = TimezoneFormatter(fmt=self.fmt, datefmt=self.datefmt)
+        fh.setFormatter(formatter)
         self._logger.addHandler(fh)
         self._file_handler = fh
 
@@ -93,27 +117,123 @@ class BaseLogger:
             self._file_handler = None
 
 
-@dataclass(slots=True)
+# @dataclass
+# class TrainerLogger(BaseLogger):
+#     name: str = "Trainer"
+#     file_name: str | None = RUN_FILES.train_log
+
+#     # ---- EXTENDED API ----
+#     def log_start(
+#         self,
+#         *,
+#         run_root: Path | None,
+#         device: str,
+#         precision: str,
+#         num_steps: int,
+#         accum_steps: int,
+#         lr: float,
+#         step_idx: int,
+#     ) -> None:
+        
+#         if step_idx == 0:
+#             self.info("Starting Training")
+#         else:
+#             self.info("Resuming Training from step_idx=%d", step_idx)
+
+#         if run_root is not None:
+#             self.info("[run_dir] %s", str(run_root))
+#         self.info("[device] %s | precision=%s", device, precision)
+#         self.info("[optimization] num_steps=%d | accum_steps=%d | lr=%.3e", num_steps, accum_steps, lr)
+
+#     def log_train_step(
+#         self,
+#         *,
+#         step: int,
+#         nll: float | None = None,
+#         ppl: float | None = None,
+#         lr: float | None = None,
+#         tokens_seen_total: int | None = None,
+#         tokens_per_sec: float | None = None,
+#         step_ms: float | None = None,
+#         extra: dict[str, Any] | None = None,
+#     ) -> None:
+#         parts: list[str] = [f"step={step}"]
+#         if nll is not None:
+#             parts.append(f"nll={nll:.4f}")
+#         if ppl is not None:
+#             parts.append(f"ppl={ppl:.2f}" if ppl != float("inf") else "ppl=inf")
+#         if lr is not None:
+#             parts.append(f"lr={lr:.3e}")
+#         if tokens_per_sec is not None:
+#             parts.append(f"tok/s={tokens_per_sec:.0f}")
+#         if step_ms is not None:
+#             parts.append(f"step_ms={step_ms:.1f}")
+#         if tokens_seen_total is not None:
+#             parts.append(f"tokens_seen={tokens_seen_total}")
+#         if extra:
+#             parts.append("extra=" + ", ".join(f"{k}={v}" for k, v in extra.items()))
+#         self.info("[train] " + " | ".join(parts))
+
+#     def log_eval(
+#         self,
+#         *,
+#         step: int,
+#         nll: float,
+#         ppl: float,
+#         tokens: int | None = None,
+#     ) -> None:
+#         ppl_str = "inf" if ppl == float("inf") else f"{ppl:.2f}"
+#         msg = f"[eval] step={step} | nll={nll:.4f} | ppl={ppl_str}"
+#         if tokens is not None:
+#             msg += f" | tokens={tokens}"
+#         self.info(msg)
+
+#     def log_checkpoint(self, *, step: int, path: Path, kind: str = "last") -> None:
+#         self.info("[checkpoint] kind=%s | step=%d | path=%s", kind, step, str(path))
+
+
+
+
+
+
+@dataclass
 class TrainerLogger(BaseLogger):
     name: str = "Trainer"
-    file_name: str | None = "train.log"
+    file_name: str | None = str(RUN_FILES.train_log)
 
     # ---- EXTENDED API ----
     def log_start(
         self,
         *,
         run_root: Path | None,
+        model_params: str,
+        n_layer: int,
+        n_embd: int,
+        vocab_size: str,
         device: str,
         precision: str,
         num_steps: int,
         accum_steps: int,
         lr: float,
+        step_idx: int,
     ) -> None:
-        self.info("starting training")
+        if step_idx == 0:
+            self.info("Starting Training")
+        else:
+            self.info("Resuming Training from step_idx=%d", step_idx)
+
         if run_root is not None:
-            self.info("run_dir=%s", str(run_root))
-        self.info("device=%s precision=%s", device, precision)
-        self.info("num_steps=%d accum_steps=%d lr=%.3e", num_steps, accum_steps, lr)
+            self.info("[run_dir] %s", str(run_root))
+
+        self.info(
+            "[model] params=%s | n_layer=%d | n_embd=%d | vocab_size=%s", 
+            model_params, n_layer, n_embd, vocab_size
+        )
+        self.info("[device] device=%s | precision=%s", device, precision)
+        self.info(
+            "[optimization] num_steps=%d | accum_steps=%d | lr=%.3e",
+            num_steps, accum_steps, lr,
+        )
 
     def log_train_step(
         self,
@@ -125,24 +245,37 @@ class TrainerLogger(BaseLogger):
         tokens_seen_total: int | None = None,
         tokens_per_sec: float | None = None,
         step_ms: float | None = None,
+        peak_alloc_gb: float | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
         parts: list[str] = [f"step={step}"]
+
+        if tokens_seen_total is not None:
+            parts.append(f"tokens_total={tokens_seen_total}")
+
         if nll is not None:
             parts.append(f"nll={nll:.4f}")
+
         if ppl is not None:
-            parts.append(f"ppl={ppl:.2f}" if ppl != float("inf") else "ppl=inf")
+            parts.append(f"ppl={ppl:.2f}" if math.isfinite(ppl) else "ppl=inf")
+
         if lr is not None:
             parts.append(f"lr={lr:.3e}")
+
         if tokens_per_sec is not None:
-            parts.append(f"tok/s={tokens_per_sec:.0f}")
+            parts.append(f"tok_per_s={tokens_per_sec:.0f}")
+
         if step_ms is not None:
             parts.append(f"step_ms={step_ms:.1f}")
-        if tokens_seen_total is not None:
-            parts.append(f"tokens_seen={tokens_seen_total}")
+
+        if peak_alloc_gb is not None:
+            parts.append(f"peak_alloc_gb={peak_alloc_gb:.3f}")
+
         if extra:
-            parts.append("extra=" + ", ".join(f"{k}={v}" for k, v in extra.items()))
-        self.info(" | ".join(parts))
+            for k, v in extra.items():
+                parts.append(f"{k}={v}")
+
+        self.info("[train] " + " | ".join(parts))
 
     def log_eval(
         self,
@@ -152,11 +285,11 @@ class TrainerLogger(BaseLogger):
         ppl: float,
         tokens: int | None = None,
     ) -> None:
-        ppl_str = "inf" if ppl == float("inf") else f"{ppl:.2f}"
-        msg = f"eval | step={step} | nll={nll:.4f} | ppl={ppl_str}"
+        ppl_str = f"{ppl:.2f}" if math.isfinite(ppl) else "inf"
+        parts = [f"step={step}", f"nll={nll:.4f}", f"ppl={ppl_str}"]
         if tokens is not None:
-            msg += f" | tokens={tokens}"
-        self.info(msg)
+            parts.append(f"tokens={tokens}")
+        self.info("[eval] " + " | ".join(parts))
 
     def log_checkpoint(self, *, step: int, path: Path, kind: str = "last") -> None:
-        self.info("checkpoint | kind=%s | step=%d | path=%s", kind, step, str(path))
+        self.info("[checkpoint] kind=%s | step=%d | path=%s", kind, step, str(path))
