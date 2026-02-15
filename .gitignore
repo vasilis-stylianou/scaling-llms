@@ -11,6 +11,11 @@ __pycache__/
 # OS
 .DS_Store
 
+# VSCode
+.vscode/
+
 # Dirs to ignore
 data/
 runs/
+
+
