@@ -48,7 +48,30 @@ class RunFileNames:
     trainer_config: str = "trainer_configs.json"
     data_config: str = "data_configs.json"
     model_config: str = "model_configs.json"
+    model_class: str = "model_class.json"
     train_log: str = "train.log"
+    data_log: str = "data_log.log"
+    best_ckpt: str = "best.pt"
+    last_ckpt: str = "latest.pt"
+
+    def as_list(self) -> list[str]:
+        """Return all run-related file names as a list.
+
+        The order is deterministic and mirrors the attributes defined on the
+        dataclass.
+        """
+        return [
+            self.trainer_config,
+            self.data_config,
+            self.model_config,
+            self.model_class,
+            self.train_log,
+            self.data_log,
+            self.best_ckpt,
+            self.last_ckpt,
+        ]
+
+    
 
 @dataclass(frozen=True)
 class RunDirNames:

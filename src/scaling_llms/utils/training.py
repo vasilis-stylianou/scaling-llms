@@ -1,7 +1,7 @@
 
 
 import math
-import random
+# import random
 from contextlib import nullcontext
 from typing import Any
 import torch
@@ -120,20 +120,20 @@ def make_lr_scheduler(optimizer, cfg: Any):
     return LambdaLR(optimizer, lr_lambda)
 
 
-# -----------------------------
-# CHECKPOINTING
-# -----------------------------
-def _get_rng_state() -> dict[str, Any]:
-    return {
-        "python": random.getstate(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-    }
+# # -----------------------------
+# # CHECKPOINTING
+# # -----------------------------
+# def _get_rng_state() -> dict[str, Any]:
+#     return {
+#         "python": random.getstate(),
+#         "torch": torch.get_rng_state(),
+#         "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+#     }
 
-def _set_rng_state(rng: dict[str, Any]) -> None:
-    if rng.get("python") is not None:
-        random.setstate(rng["python"])
-    if rng.get("torch") is not None:
-        torch.set_rng_state(rng["torch"])
-    if torch.cuda.is_available() and rng.get("cuda") is not None:
-        torch.cuda.set_rng_state_all(rng["cuda"])
+# def _set_rng_state(rng: dict[str, Any]) -> None:
+#     if rng.get("python") is not None:
+#         random.setstate(rng["python"])
+#     if rng.get("torch") is not None:
+#         torch.set_rng_state(rng["torch"])
+#     if torch.cuda.is_available() and rng.get("cuda") is not None:
+#         torch.cuda.set_rng_state_all(rng["cuda"])

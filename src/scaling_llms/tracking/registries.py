@@ -22,11 +22,16 @@ from scaling_llms.tracking.trackers import (
     JsonlTracker,
     TensorBoardTracker,
 )
+from scaling_llms.utils.config import BaseJsonConfig
+from scaling_llms.utils.loggers import BaseLogger
+
 
 # -----------------------------
 # HELPER FUNCTIONS
 # -----------------------------
 def _json_default(o: Any):
+    if isinstance(o, BaseJsonConfig):
+        return o.to_json()
     if is_dataclass(o) and not isinstance(o, type):
         return asdict(o)
     if isinstance(o, Path):
@@ -39,6 +44,9 @@ def log_as_json(obj, path) -> Path:
     path = Path(path)
     if path.exists():
         return path
+
+    if isinstance(obj, BaseJsonConfig):
+        obj = obj.to_json()
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -80,6 +88,8 @@ class RunManager:
 
     _RUN_DIR_PREFIX = "run_"
 
+    logger = BaseLogger(name="RunManager")
+
     def __init__(self, root: Path):
         # Run's root path
         self.root = Path(root)
@@ -110,32 +120,99 @@ class RunManager:
     # FACTORIES
     # -----------------------------
     @classmethod
-    def create_new_run_dir(cls, log_dir: str | Path) -> "RunManager":
-        log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
+    def create_new_run_dir(cls, exp_dir: str | Path) -> "RunManager":
+        exp_dir = Path(exp_dir)
+        exp_dir.mkdir(parents=True, exist_ok=True)
+
+        cls.logger.info("[init] Creating new run directory under %s", exp_dir)
 
         # Create path for next available run (e.g. run_<N>)
-        next_id = _get_next_id(cls._RUN_DIR_PREFIX, log_dir)
-        run_root_dir = log_dir / f"{cls._RUN_DIR_PREFIX}{next_id}"
+        next_id = _get_next_id(cls._RUN_DIR_PREFIX, exp_dir)
+        run_root_dir = exp_dir / f"{cls._RUN_DIR_PREFIX}{next_id}"
+        run_root_dir.mkdir(exist_ok=False)
+
+        cls.logger.info("[init] Created run directory %s", run_root_dir)
 
         # Create directory structure
-        run_root_dir.mkdir(exist_ok=False)
         for subdir_name in RUN_DIRS.as_list():
-            (run_root_dir / subdir_name).mkdir()
+            subdir = run_root_dir / subdir_name
+            subdir.mkdir()
+            cls.logger.info("[init] Created run sub-directory '%s/'", subdir.name)
 
         return cls(run_root_dir)
 
     # -----------------------------
     # PUBLIC API
     # -----------------------------
+    def get_run_dir(self) -> Path:
+        if not self.root.exists():
+            raise FileNotFoundError(f"Run directory does not exist: {self.root}")
+        return self.root
+
+    def get_metrics_dir(self) -> Path:
+        metrics_dir = self.root / RUN_DIRS.metrics 
+        if not metrics_dir.exists(): 
+            raise FileNotFoundError(f"Metrics directory does not exist: {metrics_dir}") 
+        return metrics_dir
+    
+    def get_metadata_dir(self) -> Path:
+        metadata_dir = self.root / RUN_DIRS.metadata
+        if not metadata_dir.exists():
+            raise FileNotFoundError(f"Metadata directory does not exist: {metadata_dir}")
+        
+        return metadata_dir 
+    
+    def get_checkpoint_dir(self) -> Path:
+        ckpt_dir = self.root / RUN_DIRS.checkpoints
+        if not ckpt_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory does not exist: {ckpt_dir}")
+        
+        return ckpt_dir 
+    
+    def get_tb_dir(self) -> Path:
+        tb_dir = self.root / RUN_DIRS.tensorboard
+        if not tb_dir.exists():
+            raise FileNotFoundError(f"TensorBoard directory does not exist: {tb_dir}")
+        
+        return tb_dir
+
+    def get_metric_path(self, category: str) -> Path: 
+        jsonl_tracker = self._jsonl_tracker_dict.get(category)
+        if jsonl_tracker is None:
+            raise ValueError(f"No JsonlTracker found for category '{category}'")
+        
+        metric_path = jsonl_tracker.get_file_path()
+        if (metric_path is None) or not metric_path.exists(): 
+            raise FileNotFoundError(f"Metrics file does not exist: {metric_path}") 
+        
+        return metric_path
+    
+    def get_metadata_path(self, filename: str) -> Path: 
+        
+        metadata_path = self.get_metadata_dir() / filename
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"Metadata file does not exist: {metadata_path}")
+
+        return metadata_path
+    
+    def get_checkpoint_path(self, filename: str) -> Path: 
+        
+        ckpt_path = self.get_checkpoint_dir() / filename
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint file does not exist: {ckpt_path}")
+
+        return ckpt_path
+    
     def log_metrics(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
         tracker_dict = self._get_jsonl_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
+            self.logger.info("[trackers] Logging metrics for category '%s' at step %d", cat, step)
             tracker_dict[cat].log_metrics(step, metrics)
 
     def log_tb(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
         tracker_dict = self._get_tb_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
+            self.logger.info("[trackers] Logging tensorboard metrics for category '%s' at step %d", cat, step)
             tracker_dict[cat].log_metrics(step=step, metrics=metrics)
 
     def log_metadata(self, obj: Any, filename: str, format: str = "json") -> Path:
@@ -148,9 +225,29 @@ class RunManager:
         if not filename.endswith(".json"):
             filename = f"{filename}.json"
 
-        path = self[RUN_DIRS.metadata] / filename
+        path = self.get_metadata_dir() / filename
+
+        self.logger.info("[metadata] Logging metadata to %s", path)
 
         return log_as_json(obj, path)
+
+    def start(self, resume=False) -> None:
+        """
+        Ensure run directories exist and initialize trackers.
+        """
+        # If resume is True, directories should already exist; if False, create them
+        try:
+            self.root.mkdir(parents=True, exist_ok=resume)
+            for path in self._subdir_name2path.values():
+                path.mkdir(parents=True, exist_ok=resume)
+        except FileExistsError:
+            raise ValueError(f"Run directory already exists: {self.root}. Set resume=True to resume run.")
+
+        # Initialize JSONL and TensorBoard trackers for all metric categories
+        self._get_jsonl_trackers(METRIC_CATS.as_list())
+        self._get_tb_trackers(METRIC_CATS.as_list())
+
+        self.logger.info("[init] %s run at %s", ("Resuming" if resume else "Started"), self.root)
 
     def close(self) -> None:
         for tracker_dict in (self._jsonl_tracker_dict, self._tb_tracker_dict):
@@ -158,6 +255,8 @@ class RunManager:
                 tracker_dict.close()
         self._jsonl_tracker_dict = None
         self._tb_tracker_dict = None
+
+        self.logger.info("[trackers] Closed all trackers.")
 
     # -----------------------------
     # Tracker creation (internal)
@@ -172,7 +271,7 @@ class RunManager:
         if subdir_name not in SUBDIR_NAME2TRACKER_CLS:
             raise ValueError(f"Invalid subdir_name; got {subdir_name}")
 
-        log_dir = Path(self[subdir_name])
+        log_dir = self.root / subdir_name
         if not log_dir.exists():
             raise FileNotFoundError(f"Expected directory does not exist: {log_dir}")
 
@@ -619,7 +718,7 @@ class BaseDataRegistry:
 
     def delete_dataset(
         self,
-        dataset_path: str | Path = None,
+        dataset_path: str | Path | None = None, 
         dataset_name: str | None = None,
         dataset_config: str | None = None,
         train_split: str | None = None,
@@ -630,6 +729,7 @@ class BaseDataRegistry:
         Delete a dataset directory and its DB row.
         """
         if dataset_path is None:
+            assert dataset_name is not None, "Must provide either dataset_path or dataset_name"
             dataset_path = self.find_dataset_path(
                 dataset_name=dataset_name,
                 dataset_config=dataset_config,
@@ -637,8 +737,8 @@ class BaseDataRegistry:
                 eval_split=eval_split,
                 raise_if_not_found=False,
             )
-
-        path = Path(dataset_path)
+        
+        path = Path(dataset_path) # type: ignore
         rel_path = path
         if path.is_absolute():
             rel_path = path.relative_to(self.datasets_root)

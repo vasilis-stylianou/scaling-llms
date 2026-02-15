@@ -56,10 +56,14 @@ class JsonlTracker(StepTracker):
         filename: str | None = None
     ):
         super().__init__(log_dir=log_dir, name=name)
-        self.fp = None
+        
+        self.file_path = self.log_dir / (filename or f"{name}.jsonl")
+        self.file_handle = None
         if self.enabled:
-            fname = filename if filename is not None else f"{name}.jsonl"
-            self.fp = (self.log_dir / fname).open("a", encoding="utf-8")
+            self.file_handle = self.file_path.open("a", encoding="utf-8")
+
+    def get_file_path(self) -> Path | None:
+        return self.file_path if self.enabled else None
 
     def write(self, step: int, metric_name: str, value: Any) -> None:
         if not self.enabled:
@@ -69,13 +73,13 @@ class JsonlTracker(StepTracker):
             METRIC_SCHEMA.metric: metric_name,
             METRIC_SCHEMA.value: value,
         }
-        self.fp.write(json.dumps(payload) + "\n")
-        self.fp.flush()
+        self.file_handle.write(json.dumps(payload) + "\n")
+        self.file_handle.flush()
 
     def close(self) -> None:
-        if self.enabled and self.fp is not None:
-            self.fp.close()
-            self.fp = None
+        if self.enabled and self.file_handle is not None:
+            self.file_handle.close()
+            self.file_handle = None
 
 # -------------------------
 # TENSORBOARD TRACKER

@@ -76,33 +76,33 @@ def extended_trainer_config():
 
 
 @pytest.fixture
-def run_manager(tmp_path):
+def tmp_run(tmp_path):
     """Create a temporary run directory for Trainer tests."""
     return RunManager.create_new_run_dir(tmp_path / "runs")
 
 
 @pytest.fixture
-def trainer(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager):
+def trainer(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run):
     """Create a default Trainer instance for tests."""
     return Trainer(
         cfg=minimal_trainer_config,
         model=dummy_model,
         train_dl=dummy_dataloader,
         eval_dl=None,
-        run=run_manager,
+        run=tmp_run,
     )
 
 
 @pytest.fixture
 def extended_trainer(extended_trainer_config, dummy_model, dummy_dataloader, tmp_path):
     """Trainer with eval, checkpointing, and LR scheduling enabled."""
-    run_manager = RunManager.create_new_run_dir(tmp_path / "runs")
+    run = RunManager.create_new_run_dir(tmp_path / "runs")
     return Trainer(
         cfg=extended_trainer_config,
         model=dummy_model,
         train_dl=dummy_dataloader,
         eval_dl=dummy_dataloader,
-        run=run_manager,
+        run=run,
     )
 
 
@@ -226,13 +226,13 @@ def test_trainer_config_json_roundtrip(tmp_path):
 # ============================================================
 # TESTS FOR TRAINER INITIALIZATION
 # ============================================================
-def test_trainer_init_state(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager, trainer):
+def test_trainer_init_state(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run, trainer):
 
     assert trainer.cfg is minimal_trainer_config
     assert trainer.model is dummy_model
     assert trainer.train_dl is dummy_dataloader
     assert trainer.eval_dl is None
-    assert trainer.run is run_manager
+    assert trainer.run is tmp_run
     assert trainer.device == minimal_trainer_config.device
 
     assert trainer.train_iter is not None
@@ -242,8 +242,8 @@ def test_trainer_init_state(minimal_trainer_config, dummy_model, dummy_dataloade
     assert isinstance(trainer.optimizer, torch.optim.AdamW)
     assert trainer.lr_scheduler is None
     assert trainer.ckpt_manager is not None
-    assert trainer.sys_logger is not None
-    assert trainer.sys_logger.name == "Trainer"
+    assert trainer.logger is not None
+    assert trainer.logger.name == "Trainer"
 
     assert trainer.step_idx == 0
     assert trainer.tokens_seen_total == 0
@@ -270,7 +270,7 @@ def test_trainer_train_resume_logic(trainer):
     assert (trainer.step_idx - curr_step_idx) == (max_steps - NUM_STEPS)
 
 
-def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager, trainer):
+def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run, trainer):
 
     trainer.run.log_metadata(minimal_trainer_config, RUN_FILES.trainer_config, format="json")
     trainer.train()
@@ -280,7 +280,7 @@ def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy
 
     new_model = GPTModel(gpt_cfg)
     resumed = Trainer.from_checkpoint(
-        run_manager.root,
+        tmp_run,
         "roundtrip.pt",
         new_model,
         train_dl=dummy_dataloader,
@@ -295,13 +295,13 @@ def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy
         assert torch.allclose(p1, p2)
 
 
-def test_trainer_state_dict_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, run_manager):
+def test_trainer_state_dict_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run):
     trainer = Trainer(
         cfg=minimal_trainer_config,
         model=dummy_model,
         train_dl=dummy_dataloader,
         eval_dl=None,
-        run=run_manager,
+        run=tmp_run,
     )
 
     trainer.step_idx = 7
@@ -313,7 +313,7 @@ def test_trainer_state_dict_roundtrip(minimal_trainer_config, dummy_model, dummy
         model=dummy_model,
         train_dl=dummy_dataloader,
         eval_dl=None,
-        run=run_manager,
+        run=tmp_run,
     )
     new_trainer.load_state_dict(state)
 
@@ -336,10 +336,10 @@ def test_trainer_checkpointing_writes_files(extended_trainer):
 
     trainer.train(max_steps=2) # ckpt_log_freq = 1
 
-    latest_ckpt = trainer.run[RUN_DIRS.checkpoints] / "latest.pt"
-    step_ckpt = trainer.run[RUN_DIRS.checkpoints] / "step_1.pt"
-    assert latest_ckpt.exists()
-    assert step_ckpt.exists()
+    last_ckpt = trainer.run[RUN_DIRS.checkpoints] / RUN_FILES.last_ckpt
+    best_ckpt = trainer.run[RUN_DIRS.checkpoints] / RUN_FILES.best_ckpt
+    assert last_ckpt.exists()
+    assert best_ckpt.exists()
 
 
 def test_trainer_lr_scheduler_updates_lr(extended_trainer):

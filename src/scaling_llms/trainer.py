@@ -1,16 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import json
+import importlib
 import logging
 import math
 from pathlib import Path
 from typing import Any
 import torch
+import json
 
 from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
 from scaling_llms.tracking.registries import RunManager
 from scaling_llms.tracking.checkpoint import CheckpointManager
 from scaling_llms.utils.loggers import TrainerLogger
+from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
     create_infinite_loader,
     compute_grad_zero_frac,
@@ -24,10 +26,31 @@ from scaling_llms.utils.training import (
 
 
 # -------------------------
+# HELPER FUNCTIONS
+# -------------------------
+def get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
+    """Extract model class and config class info for serialization."""
+    model_class = type(model)
+    config_class = type(model.cfg)
+    return {
+        "model_module": model_class.__module__,
+        "model_class_name": model_class.__name__,
+        "config_module": config_class.__module__,
+        "config_class_name": config_class.__name__,
+    }
+
+
+def load_model_class(class_info: dict[str, str]) -> type:
+    """Dynamically import and return the model class."""
+    module = importlib.import_module(class_info["module"])
+    return getattr(module, class_info["class_name"])
+
+
+# -------------------------
 # TRAINER CONFIG
 # -------------------------
 @dataclass
-class TrainerConfig:
+class TrainerConfig(BaseJsonConfig):
     # Optimization
     num_steps: int
     lr: float
@@ -52,6 +75,7 @@ class TrainerConfig:
     sys_log_freq: int = 100
     eval_log_freq: int = 500
     ckpt_log_freq: int = -1
+    best_eval_nll_tol: float = 1e-4
 
     # Timer
     enable_cuda_timer: bool = False
@@ -59,19 +83,13 @@ class TrainerConfig:
     # Reproducibility
     seed: int = 1234
     
-
     # --- FACTORIES ---
     @classmethod
-    def from_json(cls, path: str | Path) -> "TrainerConfig":
-        path = Path(path)
-        with path.open("r") as f:
-            data = json.load(f)
-
+    def _postprocess_loaded_data(cls, data: dict[str, Any]) -> dict[str, Any]:
         # Convert log_dir back to Path if present
         if "log_dir" in data and data["log_dir"] is not None:
             data["log_dir"] = Path(data["log_dir"])
-
-        return cls(**data)
+        return data
     
     # --- PRIVATE METHODS ---
     def __post_init__(self) -> None:
@@ -166,26 +184,23 @@ class Trainer:
         # Init CheckpointManager
         if self.run is not None:
             # Attach ckpt manager to the active run's checkpoint dir
-            self.ckpt_manager = CheckpointManager(
-                self.run[RUN_DIRS.checkpoints], 
-                self.model,
-                self.optimizer,
-                self.scaler,
-                self.lr_scheduler,
-            )
+            self.ckpt_manager = self._create_ckpt_manager()
         else:
             self.ckpt_manager = None
 
-        # System Logger
-        self.sys_logger = TrainerLogger(
+        # Init Logger
+        self.logger = TrainerLogger(
             name="Trainer",
-            log_dir=self.run[RUN_DIRS.metadata] if self.run else None,  # writes metadata/train.log
+            file_name=str(RUN_FILES.train_log) if self.run else None,
+            log_dir=self.run.get_metadata_dir() if self.run else None,  # writes metadata/train.log
             level=logging.INFO,
         )
 
         # Training State
         self.step_idx: int = 0
         self.tokens_seen_total: int = 0
+        self.best_eval_nll: float = float("inf")
+        self.best_step_idx: int = -1
 
     # --- STATE DICT ---
     def state_dict(self) -> dict[str, Any]:
@@ -193,45 +208,96 @@ class Trainer:
         return {
             "step_idx": int(self.step_idx),
             "tokens_seen_total": int(self.tokens_seen_total),
+            "best_eval_nll": float(self.best_eval_nll),
+            "best_step_idx": int(self.best_step_idx),
         }
     
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """Load trainer state from a dictionary."""
         self.step_idx = int(state.get("step_idx", 0))
         self.tokens_seen_total = int(state.get("tokens_seen_total", 0))
+        self.best_eval_nll = float(state.get("best_eval_nll", float("inf")))
+        self.best_step_idx = int(state.get("best_step_idx", -1))
+
+    def reset_state(self) -> None:
+        """Reset trainer state to initial values."""
+        self.step_idx = 0
+        self.tokens_seen_total = 0
+        self.best_eval_nll = float("inf")
+        self.best_step_idx = -1
 
     # --- FACTORIES --- 
     @classmethod
     def from_checkpoint(
         cls,
-        run_path: str | Path,
+        run: RunManager,
         ckpt_name: str,
-        model: torch.nn.Module,
+        model: torch.nn.Module | None = None,
         train_dl=None,
         eval_dl=None,
-        strict: bool = True,
-        restore_rng: bool = True,
+        reset_state=False,
+        strict: bool = True
     ) -> "Trainer":
-        # Resuming run
-        run = RunManager(Path(run_path)) 
-
-        # Load trainer configs from metadata dir
-        cfg_json_path = run[RUN_DIRS.metadata] / RUN_FILES.trainer_config
-        cfg = TrainerConfig.from_json(cfg_json_path)
+        """Load trainer from checkpoint.
         
+        Args:
+            run_path: Path to the run directory
+            ckpt_name: Name of checkpoint file (e.g., "latest.pt")
+            model: Model instance. If None, will auto-instantiate from saved metadata.
+            train_dl: Training dataloader
+            eval_dl: Evaluation dataloader  
+            strict: Whether to strictly enforce state dict matching
+            
+        Returns:
+            Trainer instance restored from checkpoint
+        """
+        # Load trainer configs from metadata dir
+        cfg = TrainerConfig.from_json(run.get_metadata_path(RUN_FILES.trainer_config))
+        
+        # Auto-instantiate model if not provided
+        if model is None:
+            
+            # Load model and config class info
+            model_class_path = run.get_metadata_path(RUN_FILES.model_class)
+            class_info = json.loads(model_class_path.read_text())
+
+            # Dynamically load the model class
+            ModelClass = load_model_class({
+                "module": class_info["model_module"],
+                "class_name": class_info["model_class_name"]
+            })
+            
+            # Dynamically load the config class
+            ConfigClass = load_model_class({
+                "module": class_info["config_module"],
+                "class_name": class_info["config_class_name"]
+            })
+            
+            # Load model config
+            model_cfg_path = run.get_metadata_path(RUN_FILES.model_config)
+            model_cfg = ConfigClass.from_json(model_cfg_path)
+            
+            # Instantiate model
+            model = ModelClass(model_cfg)
+
         # Init Trainer
         trainer = cls(cfg=cfg, model=model, train_dl=train_dl, eval_dl=eval_dl, run=run)
 
         # Configure Trainer's state
-        ckpt_path = run[RUN_DIRS.checkpoints] / ckpt_name
+        ckpt_path = run.get_checkpoint_path(ckpt_name)
         trainer_state = trainer.ckpt_manager.load(ckpt_path, strict=strict)
         trainer.load_state_dict(trainer_state)
+        
+        if reset_state:
+            trainer.logger.log_checkpoint("Resetting trainer state.")
+            trainer.reset_state()
 
         return trainer
 
 
     # --- PUBLIC API ---
     def train(self, max_steps: int | None = None):
+        # PRE-TRAINING SETUP
         # Determine target total steps and remaining steps
         target_total = self.cfg.num_steps if max_steps is None else max_steps
         remaining_steps = target_total - self.step_idx
@@ -242,12 +308,17 @@ class Trainer:
                 f"To continue training, pass max_steps > {self.step_idx}."
             )
         
-        self.sys_logger.log_start(
+        # Log model metadata on first run (step_idx == 0)
+        if self.step_idx == 0 and self.run is not None:
+            self.run.log_metadata(self.model.cfg, RUN_FILES.model_config, format="json")
+            self.run.log_metadata(get_model_class_info(self.model), RUN_FILES.model_class, format="json")
+            self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
+        
+        self.logger.log_start(
             model_params=f"{sum(p.numel() for p in self.model.parameters()):,}",
             n_layer=self.model.cfg.n_layer,
             n_embd=self.model.cfg.n_embd,
             vocab_size=f"{self.model.cfg.vocab_size:,}",
-            run_root=self.run.root,
             device=self.device,
             precision=self.cfg.precision,
             num_steps=remaining_steps,
@@ -256,7 +327,7 @@ class Trainer:
             step_idx=self.step_idx
         )
 
-        # MAIN
+        # MAIN TRAINING LOOP
         self.model.to(self.device)
         for _ in range(remaining_steps):
             # Optimize
@@ -272,12 +343,22 @@ class Trainer:
                 eval_metrics = self.evaluate(self.eval_dl)
                 self._log_metrics({METRIC_CATS.eval: eval_metrics})
 
-                self.sys_logger.log_eval(
+                self.logger.log_eval(
                     step=self.step_idx, 
                     nll=eval_metrics["nll"], 
                     ppl=eval_metrics["ppl"], 
                     tokens=eval_metrics["tokens"]
                 )
+                
+                # Check for new best checkpoint based on eval nll improvement beyond tolerance threshold
+                if (
+                    (self.ckpt_manager is not None) and
+                    (eval_metrics["nll"] < self.best_eval_nll - self.cfg.best_eval_nll_tol)
+                ):
+                    self.logger.log_checkpoint(f"New best checkpoint at step {self.step_idx}")
+                    self.best_eval_nll = eval_metrics["nll"]
+                    self.best_step_idx = self.step_idx
+                    self.save_checkpoint(RUN_FILES.best_ckpt)
 
             # Checkpoint
             if (
@@ -286,9 +367,8 @@ class Trainer:
                 (self.step_idx > 0) and  # Avoid saving checkpoint at step_idx=0
                 (self.step_idx % self.cfg.ckpt_log_freq == 0)
             ):
-                self.save_checkpoint("latest.pt")
-                self.save_checkpoint(f"step_{self.step_idx}.pt")
-
+                self.save_checkpoint(RUN_FILES.last_ckpt)
+                    
             # Update LR
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -296,13 +376,19 @@ class Trainer:
             # Advance global step index
             self.step_idx += 1
 
+        # POST-TRAINING LOGGING
+        last_step = self.step_idx - 1  # last completed step index after training loop        
+        if last_step <= 0:
+            return # No training steps were taken, so nothing to log
+
         # Ensure last train step is always logged
-        last_step = self.step_idx - 1
-        if (last_step > 0) and ((last_step % self.cfg.train_log_freq) != 0): 
+        if (self.cfg.train_log_freq > 0) and ((last_step % self.cfg.train_log_freq) != 0):
             self._log_metrics(train_metrics, step=last_step)
 
-        return
-    
+        # Always save a final checkpoint at the end of training if checkpointing is enabled
+        if (self.ckpt_manager is not None) and (self.cfg.ckpt_log_freq > 0):
+            self.save_checkpoint(RUN_FILES.last_ckpt)
+
     @torch.no_grad()
     def evaluate(self, eval_dl) -> dict:
         self.model.to(self.device)
@@ -329,11 +415,19 @@ class Trainer:
             "tokens": total_tokens,
         }
 
-    def save_checkpoint(self, name: str = "latest.pt") -> Path:
+    def save_checkpoint(self, name: str) -> Path:
         if self.ckpt_manager is None:
-            raise RuntimeError("Cannot save checkpoint when Trainer.run is None.")
+            raise RuntimeError(
+                "Cannot save checkpoint when Trainer.ckpt_manager is None."
+                "Attach Trainer to a run using trainer.attach_run(run) to enable checkpointing."
+            )
         
         return self.ckpt_manager.save(self.state_dict(), name)
+
+    def attach_run(self, run: RunManager) -> None:
+        self.run = run
+        self.logger.log_dir = run.get_metadata_dir()
+        self.ckpt_manager = self._create_ckpt_manager() 
 
     # --- TRAINING CORE ---
     def train_micro_step(self, idx, targets) -> torch.Tensor:
@@ -438,7 +532,7 @@ class Trainer:
         m = cat2metrics.get(METRIC_CATS.train)
         s = cat2metrics.get(METRIC_CATS.system)
         if m is not None:
-            self.sys_logger.log_train_step(
+            self.logger.log_train_step(
                 step=self.step_idx,
                 nll=m.get("nll"),
                 ppl=m.get("ppl"),
@@ -512,3 +606,12 @@ class Trainer:
             "tokens_seen_total": int(self.tokens_seen_total),
             "lr": float(self.optimizer.param_groups[0]["lr"]),
         }
+    
+    def _create_ckpt_manager(self):
+        return CheckpointManager(
+            self.run.get_checkpoint_dir(), 
+            self.model,
+            self.optimizer,
+            self.scaler,
+            self.lr_scheduler,
+        )

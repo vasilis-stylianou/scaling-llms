@@ -320,7 +320,8 @@ def test_checkpoint_manager_save_load(dev_run_registry):
         scaler=None,
         lr_scheduler=None,
     )
-    ckpt_path = ckpt_manager.save(name="test_ckpt.pt")
+    trainer_state = {"step_idx": 10, "tokens_seen_total": 10000}
+    ckpt_path = ckpt_manager.save(trainer_state=trainer_state, name="test_ckpt.pt")
 
     # Create a new model and check that its parameters are different from the original model
     torch.manual_seed(2)
@@ -333,7 +334,14 @@ def test_checkpoint_manager_save_load(dev_run_registry):
 
     # Load the checkpoint into the new model and check that the parameters now match
     ckpt_manager = CheckpointManager(run[RUN_DIRS.checkpoints], model2)
-    ckpt_manager.load(ckpt_path)
+    loaded_trainer_state = ckpt_manager.load(ckpt_path)
+
+    # Check that the trainer state is loaded correctly
+    assert loaded_trainer_state == trainer_state, (
+        f"Loaded trainer state should match saved state: {loaded_trainer_state} != {trainer_state}"
+    )   
+
+    # Check that the model parameters match after loading the checkpoint
     norm1_final = _model_param_norm(model1)
     norm2_final = _model_param_norm(model2)
     assert torch.allclose(norm1_final, norm2_final), (

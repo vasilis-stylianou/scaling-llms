@@ -4,12 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from scaling_llms.utils.config import BaseJsonConfig
+
 
 # -------------------------
 # MODEL CONFIGS
 # -------------------------
 @dataclass
-class GPTConfig:
+class GPTConfig(BaseJsonConfig):
     seq_len: int = 512
     vocab_size: int = 256
     n_embd: int = 256

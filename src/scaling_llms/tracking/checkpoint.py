@@ -1,9 +1,12 @@
 """
 CheckpointManager: Centralized checkpoint save/load logic.
 """
+import logging
 from pathlib import Path
 from typing import Any
 import torch
+
+from scaling_llms.utils.loggers import BaseLogger
 
 
 class CheckpointManager:
@@ -35,10 +38,13 @@ class CheckpointManager:
         self.optimizer = optimizer
         self.scaler = scaler
         self.lr_scheduler = lr_scheduler
+
+        # Init Logger
+        self.logger = BaseLogger(name="CheckpointManager", level=logging.INFO)
     
     def save(
         self,
-        trainer_state: dict[str, Any] = None,
+        trainer_state: dict[str, Any],
         name: str = "latest.pt",
     ) -> Path:
         """
@@ -50,9 +56,10 @@ class CheckpointManager:
         
         Returns:
             Path to the saved checkpoint
-        """
+        """    
         ckpt_path = self.checkpoint_dir / name
-        
+        self.logger.info(f"[save] Saving checkpoint at step {trainer_state['step_idx']} to {ckpt_path}")
+
         ckpt = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
@@ -62,45 +69,47 @@ class CheckpointManager:
         }
         
         torch.save(ckpt, ckpt_path)
+
         return ckpt_path
     
     def load(
         self,
-        path: str | Path,
+        ckpt_path: str | Path,
         strict: bool = True,
     ) -> dict[str, Any]:
         """
         Load checkpoint and restore training state.
         
         Args:
-            path: Path to checkpoint file
+            ckpt_path: Path to checkpoint file
             strict: Whether to strictly enforce state dict matching
         
         Returns:
             Trainer state dictionary with keys like step_idx, tokens_seen_total, etc.
         """
-        ckpt = torch.load(path, map_location="cpu")
+        self.logger.info(f"[load] Loading checkpoint from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
         
         # Load training objects
+        self.logger.info("[load] Loading model state...")
         self.model.load_state_dict(ckpt["model"], strict=strict)
-        if self.optimizer is not None and ckpt.get("optimizer") is not None:
+
+        if (self.optimizer is not None) and (ckpt.get("optimizer") is not None):
+            self.logger.info("[load] Loading optimizer state...")
             self.optimizer.load_state_dict(ckpt["optimizer"])
         
         if self.scaler and self.scaler.is_enabled() and (ckpt.get("scaler") is not None):
+            self.logger.info("[load] Loading scaler state...")
             self.scaler.load_state_dict(ckpt["scaler"])
         
         if (self.lr_scheduler is not None) and (ckpt.get("lr_scheduler") is not None):
+            self.logger.info("[load] Loading lr_scheduler state...")
             self.lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         
-        # Return trainer state (handle both old and new formats for backwards compatibility)
-        if "trainer" in ckpt:
-            return ckpt["trainer"]
-        else:
-            # Legacy format: step_idx and tokens_seen_total at top level
-            return {
-                "step_idx": int(ckpt.get("step_idx", 0)),
-                "tokens_seen_total": int(ckpt.get("tokens_seen_total", 0)),
-            }
+        self.logger.info("[load] Returning trainer state...")
+
+        return ckpt["trainer"]
+        
     
     def get_checkpoint_path(self, name: str) -> Path:
         """Get the full path to a checkpoint file."""

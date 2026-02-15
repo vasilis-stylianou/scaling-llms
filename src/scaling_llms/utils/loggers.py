@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 import zoneinfo
 
-from scaling_llms.constants import RUN_FILES, LOCAL_TIMEZONE
+from scaling_llms.constants import LOCAL_TIMEZONE
 
 
 class TimezoneFormatter(logging.Formatter):
@@ -31,7 +31,7 @@ def setup_root_logging(
     *,
     level: int = logging.INFO,
     stream=sys.stdout,
-    fmt: str = "%(asctime)s | %(message)s",
+    fmt: str = "%(asctime)s | %(name)s | %(message)s",
     datefmt: str = "%Y-%m-%d %H:%M:%S",
     force: bool = True,
 ) -> None:
@@ -117,95 +117,13 @@ class BaseLogger:
             self._file_handler = None
 
 
-# @dataclass
-# class TrainerLogger(BaseLogger):
-#     name: str = "Trainer"
-#     file_name: str | None = RUN_FILES.train_log
-
-#     # ---- EXTENDED API ----
-#     def log_start(
-#         self,
-#         *,
-#         run_root: Path | None,
-#         device: str,
-#         precision: str,
-#         num_steps: int,
-#         accum_steps: int,
-#         lr: float,
-#         step_idx: int,
-#     ) -> None:
-        
-#         if step_idx == 0:
-#             self.info("Starting Training")
-#         else:
-#             self.info("Resuming Training from step_idx=%d", step_idx)
-
-#         if run_root is not None:
-#             self.info("[run_dir] %s", str(run_root))
-#         self.info("[device] %s | precision=%s", device, precision)
-#         self.info("[optimization] num_steps=%d | accum_steps=%d | lr=%.3e", num_steps, accum_steps, lr)
-
-#     def log_train_step(
-#         self,
-#         *,
-#         step: int,
-#         nll: float | None = None,
-#         ppl: float | None = None,
-#         lr: float | None = None,
-#         tokens_seen_total: int | None = None,
-#         tokens_per_sec: float | None = None,
-#         step_ms: float | None = None,
-#         extra: dict[str, Any] | None = None,
-#     ) -> None:
-#         parts: list[str] = [f"step={step}"]
-#         if nll is not None:
-#             parts.append(f"nll={nll:.4f}")
-#         if ppl is not None:
-#             parts.append(f"ppl={ppl:.2f}" if ppl != float("inf") else "ppl=inf")
-#         if lr is not None:
-#             parts.append(f"lr={lr:.3e}")
-#         if tokens_per_sec is not None:
-#             parts.append(f"tok/s={tokens_per_sec:.0f}")
-#         if step_ms is not None:
-#             parts.append(f"step_ms={step_ms:.1f}")
-#         if tokens_seen_total is not None:
-#             parts.append(f"tokens_seen={tokens_seen_total}")
-#         if extra:
-#             parts.append("extra=" + ", ".join(f"{k}={v}" for k, v in extra.items()))
-#         self.info("[train] " + " | ".join(parts))
-
-#     def log_eval(
-#         self,
-#         *,
-#         step: int,
-#         nll: float,
-#         ppl: float,
-#         tokens: int | None = None,
-#     ) -> None:
-#         ppl_str = "inf" if ppl == float("inf") else f"{ppl:.2f}"
-#         msg = f"[eval] step={step} | nll={nll:.4f} | ppl={ppl_str}"
-#         if tokens is not None:
-#             msg += f" | tokens={tokens}"
-#         self.info(msg)
-
-#     def log_checkpoint(self, *, step: int, path: Path, kind: str = "last") -> None:
-#         self.info("[checkpoint] kind=%s | step=%d | path=%s", kind, step, str(path))
-
-
-
-
-
-
-@dataclass
+@dataclass(slots=True)
 class TrainerLogger(BaseLogger):
-    name: str = "Trainer"
-    file_name: str | None = str(RUN_FILES.train_log)
 
     # ---- EXTENDED API ----
     def log_start(
         self,
         *,
-        run_root: Path | None,
         model_params: str,
         n_layer: int,
         n_embd: int,
@@ -221,9 +139,6 @@ class TrainerLogger(BaseLogger):
             self.info("Starting Training")
         else:
             self.info("Resuming Training from step_idx=%d", step_idx)
-
-        if run_root is not None:
-            self.info("[run_dir] %s", str(run_root))
 
         self.info(
             "[model] params=%s | n_layer=%d | n_embd=%d | vocab_size=%s", 
@@ -291,5 +206,54 @@ class TrainerLogger(BaseLogger):
             parts.append(f"tokens={tokens}")
         self.info("[eval] " + " | ".join(parts))
 
-    def log_checkpoint(self, *, step: int, path: Path, kind: str = "last") -> None:
-        self.info("[checkpoint] kind=%s | step=%d | path=%s", kind, step, str(path))
+    def log_checkpoint(self, msg) -> None:
+        self.info("[checkpoint] " + msg)
+
+
+@dataclass(slots=True)
+class DataLogger(BaseLogger):
+
+    def log_start(self, cfg) -> None:
+        
+        if cfg.start_sample_idx > 0: 
+            self.info("Resuming Data Loading from sample_idx=%d", cfg.start_sample_idx) 
+        else:
+            self.info("Starting Data Loading") 
+
+        parts = [f"name={cfg.dataset_name}"]
+        if cfg.dataset_config is not None:
+            parts.append(f"config={cfg.dataset_config}")
+        if cfg.train_split is not None:
+            parts.append(f"train_split={cfg.train_split}")
+        if cfg.eval_split is not None:
+            parts.append(f"eval_split={cfg.eval_split}")
+
+        self.info("[dataset info] " + " | ".join(parts))
+
+
+    def log_batch_info(
+        self, 
+        *, 
+        vocab_size: int, 
+        seq_len: int, 
+        train_batch_size: int,
+        eval_batch_size: int,
+        dtype: str,
+    ) -> None:
+        self.info(
+            "[batch info] vocab_size=%d | seq_len=%d | train_batch_size=%d | eval_batch_size=%d | dtype=%s", 
+            vocab_size, seq_len, train_batch_size, eval_batch_size, dtype
+        )
+        
+    def log_dataset_loading(self, msg: str) -> None: 
+        self.info("[hf dataset loading] %s", msg)
+
+    def log_tokenization(self, msg: str) -> None:
+        self.info("[tokenization] %s", msg)
+
+    def log_token_buffer_loading(self, msg: str) -> None:
+        self.info("[token buffer loading] %s", msg)
+        
+    def log_dataloader_info(self, msg: str) -> None:
+        self.info("[dataloader] %s", msg)
+    
