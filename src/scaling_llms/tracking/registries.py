@@ -821,6 +821,7 @@ class GoogleDriveConfigs:
 
         # Validate drive root exists or can be mounted
         if not self.drive_root.exists():
+            
             # Mount to Drive if we're in Colab and auto_mount is enabled; otherwise, expect the drive to already be mounted
             if (os.environ["SCALING_LLMS_ENV"] == "colab") and self.auto_mount:
                 try:

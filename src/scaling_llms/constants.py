@@ -5,9 +5,14 @@ from dataclasses import dataclass
 os.environ["SCALING_LLMS_ENV"] = os.getenv("SCALING_LLMS_ENV", "local")
 
 LOCAL_TIMEZONE: str = "Europe/Athens"
-DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com/My Drive"
-COLAB_DRIVE_MOUNTPOINT: str = "/content/drive/MyDrive"
-DRIVE_SUBDIR_NAME = "ml-experiments"  # subdir within Google Drive where runs and data will be stored
+
+# Google Drive Settings
+DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com"
+COLAB_DRIVE_MOUNTPOINT: str = "/content/drive"
+DESKTOP_DRIVE_SUBDIR = "My Drive/ml-experiments"  # subdir within Google Drive where runs and data will be stored
+COLAB_DRIVE_SUBDIR = "MyDrive/ml-experiments" 
+
+# Project Settings
 PROJECT_NAME: str = "scaling-llms"
 PROJECT_DEV_NAME: str = "scaling-llms-dev"
 LOCAL_DATA_DIR = Path.home() / ".local" / "share" / PROJECT_NAME
@@ -122,7 +127,7 @@ class GoogleDriveDefaults:
     │       └── ...
     """
     mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT if os.environ["SCALING_LLMS_ENV"] == "local" else COLAB_DRIVE_MOUNTPOINT)
-    drive_subdir: str = DRIVE_SUBDIR_NAME 
+    drive_subdir: str =  DESKTOP_DRIVE_SUBDIR if os.environ["SCALING_LLMS_ENV"] == "local" else COLAB_DRIVE_SUBDIR
     project_subdir: str = PROJECT_NAME
     run_registry_name: str = "run_registry"
     runs_db_name: str = "runs.db"
@@ -130,7 +135,6 @@ class GoogleDriveDefaults:
     data_registry_name: str = "data_registry"
     datasets_db_name: str = "datasets.db"
     tokenized_datasets_subdir: str = "tokenized_datasets"
-
 
 
 # -------------------------
