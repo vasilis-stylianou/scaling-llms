@@ -820,11 +820,7 @@ class GoogleDriveConfigs:
                 if os.environ.get("SCALING_LLMS_ENV") == "colab"
                 else GOOGLE_DRIVE_DEFAULTS.desktop_mountpoint
             )
-
         self._mountpoint = Path(self.mountpoint)
-
-        if self.auto_mount:
-            self._mount_if_needed(force_remount=self.force_remount)
 
         self.drive_root = self._resolve_drive_root()
         self.project_root = self.drive_root / self.project_subdir
@@ -835,31 +831,13 @@ class GoogleDriveConfigs:
         self.datasets_db_path = self.data_registry / self.datasets_db_name
         self.tokenized_datasets_root = self.data_registry / self.tokenized_datasets_subdir
 
-    def _mount_if_needed(self, force_remount: bool = False) -> None:
-        if self._drive_root_exists():
-            return
-
-        try:
-            from google.colab import drive  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(
-                "Google Drive is not mounted and google.colab is not available. "
-                "Mount Drive manually or set auto_mount=False with a valid mountpoint."
-            ) from exc
-
-        drive.mount(str(self._mountpoint), force_remount=force_remount)
-
-    def _drive_root_exists(self) -> bool:
-        if self.drive_root_name:
-            return (self._mountpoint / self.drive_root_name).exists()
-
-        return (self._mountpoint / "MyDrive").exists() or (
-            self._mountpoint / "My Drive"
-        ).exists()
+        
+        if self.auto_mount:
+            self._mount_if_needed(force_remount=self.force_remount)
 
     def _resolve_drive_root(self) -> Path:
         # If an explicit drive root name was provided, prefer that exact path.
-        if getattr(self, "drive_root_name", None):
+        if self.drive_root_name is not None:
             drive_root = self._mountpoint / self.drive_root_name
             if not drive_root.exists():
                 raise FileNotFoundError(f"Drive root not found: {drive_root}")
@@ -879,19 +857,23 @@ class GoogleDriveConfigs:
         if my_drive.exists():
             return my_drive
 
-        # Fallback: if the plain MyDrive root exists return it (older behaviour)
-        plain_mydrive = self._mountpoint / "MyDrive"
-        if plain_mydrive.exists():
-            return plain_mydrive
-
-        plain_my_drive = self._mountpoint / "My Drive"
-        if plain_my_drive.exists():
-            return plain_my_drive
-
         raise FileNotFoundError(
             f"Drive root not found under mountpoint {self._mountpoint}; looked for '{self.drive_subdir}', 'MyDrive/{self.drive_subdir}', and top-level MyDrive variants."
         )
 
+    def _mount_if_needed(self, force_remount: bool = False) -> None:
+        if (self.drive_root is not None) and self.drive_root.exists():
+            return
+
+        try:
+            from google.colab import drive  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "Google Drive is not mounted and google.colab is not available. "
+                "Mount Drive manually or set auto_mount=False with a valid mountpoint."
+            ) from exc
+
+        drive.mount(str(self._mountpoint), force_remount=force_remount)
 
 class GoogleDriveRunRegistry(BaseRunRegistry):
     """
