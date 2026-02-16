@@ -5,7 +5,8 @@ from dataclasses import dataclass
 os.environ["SCALING_LLMS_ENV"] = os.getenv("SCALING_LLMS_ENV", "local")
 
 LOCAL_TIMEZONE: str = "Europe/Athens"
-DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com"
+DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com/My Drive"
+COLAB_DRIVE_MOUNTPOINT: str = "/content/drive/MyDrive"
 DRIVE_SUBDIR_NAME = "ml-experiments"  # subdir within Google Drive where runs and data will be stored
 PROJECT_NAME: str = "scaling-llms"
 PROJECT_DEV_NAME: str = "scaling-llms-dev"
@@ -103,22 +104,26 @@ class DataFileNames:
 # --------------------------
 @dataclass(frozen=True)
 class GoogleDriveDefaults:
-    """
-    drive_subdir is the subdirectory within the Google Drive mount point where runs and data will be stored.
-    
+    """    
     Example structure on Google Drive:
 
-    drive_root/drive_subdir/
-    ├── data/
-    ├── db_name/
-    └── artifacts/
-        └── <experiment_name>/
-            ├── <run_1>/
-            ├── <run_2>/
-            └── ...
+    {mountpoint}/{drive_subdir}/{project_subdir}/
+    ├── data_registry/
+    │   ├── datasets.db
+    │   └── tokenized_datasets/
+    │       ├── <dataset_name_1>/
+    │       ├── <dataset_name_2>/
+    │       └── ...
+    ├── run_registry/
+    │   ├── runs.db
+    │   └── artifacts/
+    │       ├── <experiment_name_1>/
+    │       │   ├── <run_1>/
+    │       │   └── <run_2>/
+    │       ├── <experiment_name_2>/
+    │       └── ...
     """
-    desktop_mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT)
-    colab_mountpoint: Path = Path("/content/drive") # recommended mount point in Colab
+    mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT if os.environ["SCALING_LLMS_ENV"] == "local" else COLAB_DRIVE_MOUNTPOINT)
     drive_subdir: str = DRIVE_SUBDIR_NAME 
     project_subdir: str = PROJECT_NAME
     run_registry_name: str = "run_registry"

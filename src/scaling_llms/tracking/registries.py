@@ -800,8 +800,8 @@ class BaseDataRegistry:
 # -----------------------------
 @dataclass
 class GoogleDriveConfigs:
-    mountpoint: str | Path | None = None
-    drive_root_name: str | None = None # Will resolve to "{desktop_mountpoint}/{drive_subdir}" or "{colab_mountpoint}/MyDrive/{drive_subdir}" depending on environment
+    
+    mountpoint: str | Path = GOOGLE_DRIVE_DEFAULTS.mountpoint
     drive_subdir: str = GOOGLE_DRIVE_DEFAULTS.drive_subdir
     project_subdir: str = GOOGLE_DRIVE_DEFAULTS.project_subdir
     run_registry_name: str = GOOGLE_DRIVE_DEFAULTS.run_registry_name
@@ -814,15 +814,29 @@ class GoogleDriveConfigs:
     force_remount: bool = False
 
     def __post_init__(self) -> None:
-        if self.mountpoint is None:
-            self.mountpoint = (
-                GOOGLE_DRIVE_DEFAULTS.colab_mountpoint
-                if os.environ.get("SCALING_LLMS_ENV") == "colab"
-                else GOOGLE_DRIVE_DEFAULTS.desktop_mountpoint
-            )
-        self._mountpoint = Path(self.mountpoint)
+        
+        # Resolve mountpoint and drive root paths
+        self.mountpoint = Path(self.mountpoint)
+        self.drive_root = Path(self.mountpoint) / self.drive_subdir
 
-        self.drive_root = self._resolve_drive_root()
+        # Validate drive root exists or can be mounted
+        if not self.drive_root.exists():
+            # Mount to Drive if we're in Colab and auto_mount is enabled; otherwise, expect the drive to already be mounted
+            if (os.environ["SCALING_LLMS_ENV"] == "colab") and self.auto_mount:
+                try:
+                    from google.colab import drive  # type: ignore
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Google Drive is not mounted and google.colab is not available. "
+                        "Mount Drive manually or set auto_mount=False with a valid mountpoint."
+                    ) from exc
+
+                drive.mount(str(self.mountpoint), force_remount=self.force_remount)
+
+            # Create the drive root directory if it doesn't exist
+            self.drive_root.mkdir(parents=True, exist_ok=True)
+
+        # Set up all registry paths based on the drive root and project subdir
         self.project_root = self.drive_root / self.project_subdir
         self.run_registry = self.project_root / self.run_registry_name
         self.runs_artifacts_root = self.run_registry / self.runs_artifacts_subdir
@@ -831,49 +845,6 @@ class GoogleDriveConfigs:
         self.datasets_db_path = self.data_registry / self.datasets_db_name
         self.tokenized_datasets_root = self.data_registry / self.tokenized_datasets_subdir
 
-        
-        if self.auto_mount:
-            self._mount_if_needed(force_remount=self.force_remount)
-
-    def _resolve_drive_root(self) -> Path:
-        # If an explicit drive root name was provided, prefer that exact path.
-        if self.drive_root_name is not None:
-            drive_root = self._mountpoint / self.drive_root_name
-            if not drive_root.exists():
-                raise FileNotFoundError(f"Drive root not found: {drive_root}")
-            return drive_root
-
-        # First try mountpoint/{drive_subdir} (desktop-style mount)
-        candidate = self._mountpoint / self.drive_subdir
-        if candidate.exists():
-            return candidate
-
-        # Next try Colab-style mounts: {mountpoint}/MyDrive/{drive_subdir}
-        mydrive = self._mountpoint / "MyDrive" / self.drive_subdir
-        if mydrive.exists():
-            return mydrive
-
-        my_drive = self._mountpoint / "My Drive" / self.drive_subdir
-        if my_drive.exists():
-            return my_drive
-
-        raise FileNotFoundError(
-            f"Drive root not found under mountpoint {self._mountpoint}; looked for '{self.drive_subdir}', 'MyDrive/{self.drive_subdir}', and top-level MyDrive variants."
-        )
-
-    def _mount_if_needed(self, force_remount: bool = False) -> None:
-        if (self.drive_root is not None) and self.drive_root.exists():
-            return
-
-        try:
-            from google.colab import drive  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(
-                "Google Drive is not mounted and google.colab is not available. "
-                "Mount Drive manually or set auto_mount=False with a valid mountpoint."
-            ) from exc
-
-        drive.mount(str(self._mountpoint), force_remount=force_remount)
 
 class GoogleDriveRunRegistry(BaseRunRegistry):
     """
