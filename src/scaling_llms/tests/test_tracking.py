@@ -21,6 +21,8 @@ from scaling_llms.tracking.registries import (
     GoogleDriveRunRegistry,
 )
 
+EXPERIMENT_NAME = "test_tracking"
+RUN_NAME = "run_test_tracking"
 
 # ============================================================
 # FIXTURES FOR REGISTRIES AND CHECKPOINT MANAGER TESTS
@@ -60,7 +62,7 @@ def clean_registries_and_cache(
                 item.unlink(missing_ok=True)
 
         # Clean up  experiments
-        df_runs = dev_run_registry.get_runs_as_df()
+        df_runs = dev_run_registry.get_runs_as_df().query(f"experiment_name == '{EXPERIMENT_NAME}'")
         for _, row in df_runs.iterrows():
             dev_run_registry.delete_experiment(row.experiment_name, confirm=False)
 
@@ -90,8 +92,8 @@ def test_run_registry_paths(dev_run_registry):
     )
 
     # Create a run
-    exp_name = "exp_test"
-    run_name = "run_test"
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
     run = dev_run_registry.start_run(exp_name, run_name)
     run.close()
 
@@ -125,8 +127,8 @@ def test_run_registry_paths(dev_run_registry):
         assert subdir_path == run[subdir], f"Run should be accessible via run[{subdir}]"
 
 def test_run_registry_delete(dev_run_registry):
-    exp_name = "exp_test"
-    run_name = "run_test"
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
     run = dev_run_registry.start_run(exp_name, run_name)
     run.close()
 
@@ -142,8 +144,8 @@ def test_run_registry_delete(dev_run_registry):
 
 
 def test_run_registry_resume(dev_run_registry):
-    exp_name = "exp_test"
-    run_name = "run_test"
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
     run1 = dev_run_registry.start_run(exp_name, run_name)
     run1.close()
 
@@ -159,8 +161,8 @@ def test_run_registry_resume(dev_run_registry):
 
 
 def test_run_logging(dev_run_registry):
-    exp_name = "exp_test"
-    run_name = "run_test"
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
     run = dev_run_registry.start_run(exp_name, run_name)
 
     # Log metrics
@@ -307,7 +309,7 @@ def _model_param_norm(model: GPTModel) -> torch.Tensor:
 
 def test_checkpoint_manager_save_load(dev_run_registry):
     # Create a run to store checkpoints
-    run = dev_run_registry.start_run("exp_test_ckpt", "run_test_ckpt", resume=False)
+    run = dev_run_registry.start_run(EXPERIMENT_NAME, RUN_NAME, resume=False)
     run.close()
 
     # Create a model and save a checkpoint
