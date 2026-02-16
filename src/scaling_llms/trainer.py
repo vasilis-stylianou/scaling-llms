@@ -68,7 +68,6 @@ class TrainerConfig(BaseJsonConfig):
     min_lr_ratio: float = 0.0
 
     # Trackers / Logging
-    track_metrics: bool = True
     enable_tb: bool = False
     train_log_freq: int = 1
     net_log_freq: int = 50

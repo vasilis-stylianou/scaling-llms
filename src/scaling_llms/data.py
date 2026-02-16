@@ -138,8 +138,19 @@ def build_memmap_tokens(
     token_mmap_path = Path(token_mmap_path).expanduser().resolve()
     token_mmap_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Skip tokenization if already exists
-    
+    # Use a temporary file during construction so interrupted runs leave no
+    # partially-built memmap at the final path. The tmp path uses the final
+    # suffix + '.tmp' to mirror other parts of the codebase.
+    tmp_path = token_mmap_path.with_suffix(token_mmap_path.suffix + ".tmp")
+
+    # If a previous temp file exists, remove it (stale from interrupted run)
+    if tmp_path.exists():
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    # Skip tokenization if final memmap already exists
     if token_mmap_path.exists():
         print(f"Found existing token memmap at {token_mmap_path}, skipping tokenization.")
         return token_mmap_path
@@ -156,22 +167,37 @@ def build_memmap_tokens(
         if append_eos:
             total_tokens += 1
 
-    # Pass 2: tokenize and write to memmap
-    arr = np.memmap(token_mmap_path, mode="w+", dtype=dtype, shape=(total_tokens,))
-    write_index = 0
-    for text in texts:
-        if not text.strip():
-            continue
-        ids = encode_fn(text)
-        n = len(ids)
-        arr[write_index : write_index + n] = ids
-        write_index += n
-        if append_eos:
-            arr[write_index] = eos_id
-            write_index += 1
+    # Pass 2: tokenize and write to a temporary memmap, then atomically move
+    # it into place. This avoids leaving the final memmap in a partial state
+    # if the process is interrupted.
+    try:
+        arr = np.memmap(tmp_path, mode="w+", dtype=dtype, shape=(total_tokens,))
+        write_index = 0
+        for text in texts:
+            if not text.strip():
+                continue
+            ids = encode_fn(text)
+            n = len(ids)
+            arr[write_index : write_index + n] = ids
+            write_index += n
+            if append_eos:
+                arr[write_index] = eos_id
+                write_index += 1
 
-    arr.flush()  # ensure data is written to disk
-    assert write_index == total_tokens  # sanity check
+        arr.flush()  # ensure data is written to disk
+        assert write_index == total_tokens  # sanity check
+
+        # Atomically replace the final file with the tmp file
+        os.replace(tmp_path, token_mmap_path)
+
+    except Exception:
+        # Clean up tmp file on error to avoid leaving partial artifacts
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        raise
 
     return token_mmap_path
 
@@ -299,15 +325,10 @@ class SequentialTokenChunks(Dataset):
 # ============================================================
 # DATA CONFIG
 # ============================================================
-HF_DATASET_NAMES = Literal[
-    "wikitext-103", 
-    "openwebtext"
-]
-
 @dataclass
 class DataConfig(BaseJsonConfig):
 
-    dataset_name: HF_DATASET_NAMES
+    dataset_name: str
     seq_len: int 
     train_batch_size: int 
     eval_batch_size: int 
@@ -423,7 +444,7 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
             )
 
         # --- STEP 1: Load raw text splits (optionally sliced) ---
-        # NOTE: if not using HuggingFace datasets, you can condition on (cfg.dataset_name in HF_DATASET_NAMES)
+        # NOTE: if not using HuggingFace datasets, you can condition on (e.g. cfg.dataset_name in HF_DATASET_NAMES)
         # and implement your own loading logic here to produce train_texts and eval_texts as lists of strings.
         logger.log_dataloader_info("Loading raw text splits from HuggingFace...")
         train_texts, eval_texts = load_text_splits_from_hf(
@@ -509,46 +530,3 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
         "eval": eval_dl, 
         "info": info
     }
-
-
-
-
-
-
-
-
-
-
-
-    # info: Dict[str, Any] = {
-    #     "dataset_name": dataset_name,
-    #     "out_root": str(out_root),
-    #     "train_mmap_path": str(train_mmap_path),
-    #     "val_mmap_path": str(val_mmap_path),
-    #     "train_tokens_in_buffer": int(len(train_tokens_buffer)),
-    #     "eval_tokens_in_buffer": int(len(eval_tokens_buffer)),
-    #     "vocab_size": vocab_size,
-    #     "eos_id": eos_id,
-    #     "dtype": str(dtype),
-    #     "seq_len": cfg.seq_len,
-    #     "seed": cfg.seed,
-    #     "train_tokens_budget": cfg.train_tokens_budget,
-    #     "total_samples": max(1, cfg.train_tokens_budget // cfg.seq_len),
-    #     "start_sample_idx": cfg.start_sample_idx,
-    #     "num_workers": cfg.num_workers,
-    #     "wikitext_train_split": (
-    #         cfg.wikitext_train_split if dataset_name.startswith("wikitext") else None
-    #     ),
-    #     "wikitext_val_split": (
-    #         cfg.wikitext_val_split if dataset_name.startswith("wikitext") else None
-    #     ),
-    #     "wikitext_revision": (
-    #         cfg.wikitext_revision if dataset_name.startswith("wikitext") else None
-    #     ),
-    #     "owt_split": (cfg.owt_split if dataset_name == "openwebtext" else None),
-    #     "owt_revision": (cfg.owt_revision if dataset_name == "openwebtext" else None),
-    #     "owt_val_size": (cfg.owt_val_size if dataset_name == "openwebtext" else None),
-    # }
-
-    # return train_dl, eval_dl, info
-

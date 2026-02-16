@@ -189,7 +189,6 @@ def test_trainer_config_json_roundtrip(tmp_path):
         lr_schedule="cosine",
         warmup_steps=50,
         min_lr_ratio=0.1,
-        track_metrics=False,
         enable_tb=True,
         train_log_freq=5,
         net_log_freq=25,

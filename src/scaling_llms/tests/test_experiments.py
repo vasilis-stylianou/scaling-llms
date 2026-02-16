@@ -11,11 +11,18 @@ RUN_NAME = "run_test"
 @pytest.fixture(autouse=True)
 def cleanup_experiments():
     exp = ExperimentRunner(EXPERIMENT_NAME, RUN_NAME, is_dev=True)
+    try:
+        exp.delete_experiment(confirm=False)
+    except Exception:
+        pass  # If experiment doesn't exist, ignore the error
 
     yield  # Run the test
 
     # Cleanup after test
-    exp.delete_experiment(confirm=False)
+    try:
+        exp.delete_experiment(confirm=False)
+    except Exception:
+        pass  # If experiment doesn't exist, ignore the error
 
 
 @pytest.fixture
@@ -94,6 +101,8 @@ def test_experiment_runner_start(data_kwargs, gpt_hparams, trainer_kwargs):
     tb_dir = run.get_tb_dir()
     assert tb_dir.exists() and tb_dir.is_dir(), "TensorBoard log directory does not exist"
     assert any(tb_dir.iterdir()), "TensorBoard log directory is empty"
+
+    run.close()
 
 
 def test_experiment_runner_resume(data_kwargs, gpt_hparams, trainer_kwargs):

@@ -25,7 +25,7 @@ class GPTConfig(BaseJsonConfig):
     embd_pdrop: float = 0.0
     resid_pdrop: float = 0.0
     attn_pdrop: float = 0.0
-    norm_type: str = "layernorm"
+    # TODO: norm_type: str = "layernorm" 
 
     # derived (not user inputs)
     d_head: int = dc_field(init=False)
@@ -42,9 +42,9 @@ class GPTConfig(BaseJsonConfig):
         else:
             assert self.d_ff > self.n_embd, "d_ff should be larger than n_embd"
 
-        # norm choice
-        assert self.norm_type in {"layernorm", "rmsnorm"}, \
-            f"Invalid norm type: {self.norm_type}"
+        # TODO # norm choice
+        # assert self.norm_type in {"layernorm", "rmsnorm"}, \
+        #     f"Invalid norm type: {self.norm_type}"
         
 
 # -------------------------

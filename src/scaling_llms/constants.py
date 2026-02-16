@@ -6,6 +6,7 @@ os.environ["SCALING_LLMS_ENV"] = os.getenv("SCALING_LLMS_ENV", "local")
 
 LOCAL_TIMEZONE: str = "Europe/Athens"
 DESKTOP_DRIVE_MOUNTPOINT: str = "/Users/vasilis/Library/CloudStorage/GoogleDrive-stylianouvasilis@gmail.com"
+DRIVE_SUBDIR_NAME = "ml-experiments"  # subdir within Google Drive where runs and data will be stored
 PROJECT_NAME: str = "scaling-llms"
 PROJECT_DEV_NAME: str = "scaling-llms-dev"
 LOCAL_DATA_DIR = Path.home() / ".local" / "share" / PROJECT_NAME
@@ -118,6 +119,7 @@ class GoogleDriveDefaults:
     """
     desktop_mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT)
     colab_mountpoint: Path = Path("/content/drive") # recommended mount point in Colab
+    drive_subdir: str = DRIVE_SUBDIR_NAME 
     project_subdir: str = PROJECT_NAME
     run_registry_name: str = "run_registry"
     runs_db_name: str = "runs.db"

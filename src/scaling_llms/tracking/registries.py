@@ -802,6 +802,7 @@ class BaseDataRegistry:
 class GoogleDriveConfigs:
     mountpoint: str | Path | None = None
     drive_root_name: str | None = None # Will resolve to "{desktop_mountpoint}/{drive_subdir}" or "{colab_mountpoint}/MyDrive/{drive_subdir}" depending on environment
+    drive_subdir: str = GOOGLE_DRIVE_DEFAULTS.drive_subdir
     project_subdir: str = GOOGLE_DRIVE_DEFAULTS.project_subdir
     run_registry_name: str = GOOGLE_DRIVE_DEFAULTS.run_registry_name
     runs_db_name: str = GOOGLE_DRIVE_DEFAULTS.runs_db_name
@@ -857,22 +858,38 @@ class GoogleDriveConfigs:
         ).exists()
 
     def _resolve_drive_root(self) -> Path:
-        if self.drive_root_name:
+        # If an explicit drive root name was provided, prefer that exact path.
+        if getattr(self, "drive_root_name", None):
             drive_root = self._mountpoint / self.drive_root_name
             if not drive_root.exists():
                 raise FileNotFoundError(f"Drive root not found: {drive_root}")
             return drive_root
 
-        mydrive = self._mountpoint / "MyDrive"
+        # First try mountpoint/{drive_subdir} (desktop-style mount)
+        candidate = self._mountpoint / self.drive_subdir
+        if candidate.exists():
+            return candidate
+
+        # Next try Colab-style mounts: {mountpoint}/MyDrive/{drive_subdir}
+        mydrive = self._mountpoint / "MyDrive" / self.drive_subdir
         if mydrive.exists():
             return mydrive
 
-        my_drive = self._mountpoint / "My Drive"
+        my_drive = self._mountpoint / "My Drive" / self.drive_subdir
         if my_drive.exists():
             return my_drive
 
+        # Fallback: if the plain MyDrive root exists return it (older behaviour)
+        plain_mydrive = self._mountpoint / "MyDrive"
+        if plain_mydrive.exists():
+            return plain_mydrive
+
+        plain_my_drive = self._mountpoint / "My Drive"
+        if plain_my_drive.exists():
+            return plain_my_drive
+
         raise FileNotFoundError(
-            f"Neither 'MyDrive' nor 'My Drive' found under {self._mountpoint}"
+            f"Drive root not found under mountpoint {self._mountpoint}; looked for '{self.drive_subdir}', 'MyDrive/{self.drive_subdir}', and top-level MyDrive variants."
         )
 
 
