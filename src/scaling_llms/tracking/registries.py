@@ -836,8 +836,11 @@ class GoogleDriveConfigs:
             # Create the drive root directory if it doesn't exist
             self.drive_root.mkdir(parents=True, exist_ok=True)
 
-        # Set up all registry paths based on the drive root and project subdir
+        # Create the project root directory if it doesn't exist
         self.project_root = self.drive_root / self.project_subdir
+        self.project_root.mkdir(parents=True, exist_ok=True)
+
+        # Set up all registry paths based on the drive root and project subdir
         self.run_registry = self.project_root / self.run_registry_name
         self.runs_artifacts_root = self.run_registry / self.runs_artifacts_subdir
         self.runs_db_path = self.run_registry / self.runs_db_name
