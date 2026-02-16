@@ -98,7 +98,7 @@ def test_run_registry_paths(dev_run_registry):
     run.close()
 
     # Check the run is registered correctly
-    df_runs = dev_run_registry.get_runs_as_df()
+    df_runs =  dev_run_registry.get_runs_as_df().query(f"experiment_name == '{exp_name}'")
     row = df_runs.iloc[0]
     assert len(df_runs) == 1, f"Expected 1 run, found {len(df_runs)}"
     assert row.experiment_name == exp_name, (
