@@ -74,25 +74,72 @@ class BaseLogger:
     _logger: logging.Logger = dataclasses.field(init=False, repr=False)
     _file_handler: logging.Handler | None = dataclasses.field(default=None, init=False, repr=False)
 
+
     def __post_init__(self) -> None:
         self._logger = logging.getLogger(self.name)
         self._logger.setLevel(self.level)
         self._logger.propagate = self.propagate
+
+        # Notebook-safe: remove any existing file handlers for this logger name
+        for h in list(self._logger.handlers):
+            if isinstance(h, logging.FileHandler):
+                self._logger.removeHandler(h)
+                try:
+                    h.close()
+                except Exception:
+                    pass
 
         if self.file_name is not None:
             if self.log_dir is None:
                 raise ValueError("log_dir must be set when file_name is provided")
             self.log_dir = Path(self.log_dir)
             self.log_dir.mkdir(parents=True, exist_ok=True)
-            self._attach_file_handler(self.log_dir / self.file_name)
+
+            path = self.log_dir / self.file_name
+
+            # Eagerly create the file so it *definitely* exists
+            path.touch(exist_ok=True)
+
+            self._attach_file_handler(path)
+
+            # If we still can't see it, fail loudly right here
+            if not path.exists():
+                raise RuntimeError(f"Failed to create log file at: {path}")
 
     def _attach_file_handler(self, path: Path) -> None:
-        fh = logging.FileHandler(path, encoding="utf-8")
+        fh = logging.FileHandler(path, mode="a", encoding="utf-8", delay=False)
         fh.setLevel(self.level)
         formatter = TimezoneFormatter(fmt=self.fmt, datefmt=self.datefmt)
         fh.setFormatter(formatter)
         self._logger.addHandler(fh)
         self._file_handler = fh
+
+    def flush(self) -> None:
+        for h in self._logger.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+    # def __post_init__(self) -> None:
+    #     self._logger = logging.getLogger(self.name)
+    #     self._logger.setLevel(self.level)
+    #     self._logger.propagate = self.propagate
+
+    #     if self.file_name is not None:
+    #         if self.log_dir is None:
+    #             raise ValueError("log_dir must be set when file_name is provided")
+    #         self.log_dir = Path(self.log_dir)
+    #         self.log_dir.mkdir(parents=True, exist_ok=True)
+    #         self._attach_file_handler(self.log_dir / self.file_name)
+
+    # def _attach_file_handler(self, path: Path) -> None:
+    #     fh = logging.FileHandler(path, encoding="utf-8")
+    #     fh.setLevel(self.level)
+    #     formatter = TimezoneFormatter(fmt=self.fmt, datefmt=self.datefmt)
+    #     fh.setFormatter(formatter)
+    #     self._logger.addHandler(fh)
+    #     self._file_handler = fh
 
     # ---- basic API ----
     def info(self, msg: str, *args: Any) -> None:
