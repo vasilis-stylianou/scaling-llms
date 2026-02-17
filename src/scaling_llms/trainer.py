@@ -22,6 +22,7 @@ from scaling_llms.utils.training import (
     make_autocast_context,
     make_lr_scheduler,
     make_timer,
+    make_trainer_logger,
 )
 
 
@@ -188,12 +189,7 @@ class Trainer:
             self.ckpt_manager = None
 
         # Init Logger
-        self.logger = TrainerLogger(
-            name="Trainer",
-            file_name=str(RUN_FILES.train_log) if self.run else None,
-            log_dir=self.run.get_metadata_dir() if self.run else None,  # writes metadata/train.log
-            level=logging.INFO,
-        )
+        self.logger = make_trainer_logger(self.run)
 
         # Training State
         self.step_idx: int = 0
@@ -425,7 +421,7 @@ class Trainer:
 
     def attach_run(self, run: RunManager) -> None:
         self.run = run
-        self.logger.log_dir = run.get_metadata_dir()
+        self.logger = make_trainer_logger(run)
         self.ckpt_manager = self._create_ckpt_manager() 
 
     # --- TRAINING CORE ---

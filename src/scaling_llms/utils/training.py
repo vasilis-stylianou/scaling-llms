@@ -1,11 +1,15 @@
 
 
+import logging
 import math
 # import random
 from contextlib import nullcontext
 from typing import Any
 import torch
 from torch.optim.lr_scheduler import LambdaLR
+from scaling_llms.constants import RUN_FILES
+from scaling_llms.tracking.registries import RunManager
+from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.timer import DeviceTimer
 
 
@@ -118,6 +122,20 @@ def make_lr_scheduler(optimizer, cfg: Any):
         return min_lr_ratio + (1.0 - min_lr_ratio) * (1.0 - progress)
 
     return LambdaLR(optimizer, lr_lambda)
+
+def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
+    logger = TrainerLogger(
+        name="Trainer",
+        file_name=str(RUN_FILES.train_log) if run else None,
+        log_dir=run.get_metadata_dir() if run else None,
+        level=logging.INFO,
+        propagate=False,  # recommended to avoid double-logging via root
+    )
+    if run:
+        logger.info("logger initialized")
+        logger.flush()
+        
+    return logger
 
 
 # # -----------------------------
