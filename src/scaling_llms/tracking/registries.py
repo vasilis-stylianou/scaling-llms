@@ -206,13 +206,13 @@ class RunManager:
     def log_metrics(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
         tracker_dict = self._get_jsonl_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
-            self.logger.info("[trackers] Logging metrics for category '%s' at step %d", cat, step)
+            self.logger.debug("[trackers] Logging metrics for category '%s' at step %d", cat, step)
             tracker_dict[cat].log_metrics(step, metrics)
 
     def log_tb(self, cat2metrics: dict[str, dict[str, float]], step: int) -> None:
         tracker_dict = self._get_tb_trackers(METRIC_CATS.as_list())
         for cat, metrics in cat2metrics.items():
-            self.logger.info("[trackers] Logging tensorboard metrics for category '%s' at step %d", cat, step)
+            self.logger.debug("[trackers] Logging tensorboard metrics for category '%s' at step %d", cat, step)
             tracker_dict[cat].log_metrics(step=step, metrics=metrics)
 
     def log_metadata(self, obj: Any, filename: str, format: str = "json") -> Path:
@@ -227,7 +227,7 @@ class RunManager:
 
         path = self.get_metadata_dir() / filename
 
-        self.logger.info("[metadata] Logging metadata to %s", path)
+        self.logger.debug("[metadata] Logging metadata to %s", path)
 
         return log_as_json(obj, path)
 

@@ -70,7 +70,6 @@ class TrainerConfig(BaseJsonConfig):
 
     # Trackers / Logging
     enable_tb: bool = False
-    train_log_freq: int = 1
     net_log_freq: int = 50
     sys_log_freq: int = 100
     eval_log_freq: int = 500
@@ -335,10 +334,21 @@ class Trainer:
                 (self.step_idx > 0) and  # Avoid logging eval metrics at step_idx=0
                 (self.step_idx % self.cfg.eval_log_freq == 0)
             ):
+                # Compute and log eval metrics
                 eval_metrics = self.evaluate(self.eval_dl)
                 self._log_metrics({METRIC_CATS.eval: eval_metrics})
 
-                self.logger.log_eval(
+                # Report both train and eval metrics to console 
+                self.logger.log_train_step(
+                    step=self.step_idx,
+                    nll=train_metrics["nll"],
+                    ppl=train_metrics["ppl"],
+                    tokens_seen_total=train_metrics["tokens_seen_total"],
+                    tokens_per_sec=train_metrics["tokens_per_sec"],
+                    step_ms=train_metrics["step_ms"],
+                    level=logging.INFO
+                )
+                self.logger.log_eval_step(
                     step=self.step_idx, 
                     nll=eval_metrics["nll"], 
                     ppl=eval_metrics["ppl"], 
@@ -375,10 +385,6 @@ class Trainer:
         last_step = self.step_idx - 1  # last completed step index after training loop        
         if last_step <= 0:
             return # No training steps were taken, so nothing to log
-
-        # Ensure last train step is always logged
-        if (self.cfg.train_log_freq > 0) and ((last_step % self.cfg.train_log_freq) != 0):
-            self._log_metrics(train_metrics, step=last_step)
 
         # Always save a final checkpoint at the end of training if checkpointing is enabled
         if (self.ckpt_manager is not None) and (self.cfg.ckpt_log_freq > 0):
@@ -514,31 +520,17 @@ class Trainer:
         ):
             cat2metrics[METRIC_CATS.system] = self._compute_system_diagnostics(tokens)
 
-        ## Training Metrics
-        if (
-            (self.cfg.train_log_freq > 0) and 
-            (self.step_idx % self.cfg.train_log_freq == 0)
-        ):
-            cat2metrics[METRIC_CATS.train] = self._compute_training_metrics(loss_sum, tokens)
+        ## Training Metrics (always computed)
+        cat2metrics[METRIC_CATS.train] = self._compute_training_metrics(loss_sum, tokens)
 
         # 6) Logging
         self._log_metrics(cat2metrics)
 
-        m = cat2metrics.get(METRIC_CATS.train)
-        s = cat2metrics.get(METRIC_CATS.system)
-        if m is not None:
-            self.logger.log_train_step(
-                step=self.step_idx,
-                nll=m.get("nll"),
-                ppl=m.get("ppl"),
-                lr=m.get("lr"),
-                tokens_seen_total=m.get("tokens_seen_total"),
-                tokens_per_sec=(s.get("tokens_per_sec") if s else None),
-                step_ms=(s.get("step_ms") if s else None),
-                peak_alloc_gb=(s.get("peak_alloc_gb") if s else None),
-            )
+        train_metrics = cat2metrics.get(METRIC_CATS.train, {})
+        if train_metrics is not None:
+            self.logger.log_train_step(**train_metrics)
 
-        return cat2metrics.get(METRIC_CATS.train, {})
+        return train_metrics
 
     # --- INTERNALS ---
     # LOGGING METHODS        
@@ -565,13 +557,8 @@ class Trainer:
         }
 
     def _compute_system_diagnostics(self, tokens):
-        # Wall time (always available)
-        wall_ms = self.wall_timer.elapsed_ms()
-        tokens_per_sec = tokens / (wall_ms / 1e3) if wall_ms > 0 else float("nan")
-
+        # Peak GPU memory allocated (in GB)
         metrics = {
-            "step_ms": float(wall_ms),
-            "tokens_per_sec": float(tokens_per_sec),
             "peak_alloc_gb": float(
                 torch.cuda.max_memory_allocated() / 1024**3
                 if self.device == "cuda"
@@ -592,6 +579,10 @@ class Trainer:
         nll = float((loss_sum / max(1, tokens)).item())
         ppl = math.exp(nll) if nll < 20 else float("inf")
 
+        # Wall time (always available)
+        wall_ms = self.wall_timer.elapsed_ms()
+        tokens_per_sec = tokens / (wall_ms / 1e3) if wall_ms > 0 else float("nan")
+
         return {
             "step": int(self.step_idx),
             "loss_sum": float(loss_sum.item()),
@@ -599,6 +590,8 @@ class Trainer:
             "ppl": ppl,
             "tokens": int(tokens),
             "tokens_seen_total": int(self.tokens_seen_total),
+            "step_ms": float(wall_ms),
+            "tokens_per_sec": float(tokens_per_sec),
             "lr": float(self.optimizer.param_groups[0]["lr"]),
         }
     

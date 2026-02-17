@@ -55,7 +55,6 @@ def trainer_kwargs():
         accum_steps=2,
         lr_schedule="linear",
         enable_tb=True, 
-        train_log_freq=1,
         net_log_freq=2,
         sys_log_freq=2,
         eval_log_freq=2,

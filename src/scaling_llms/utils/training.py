@@ -123,18 +123,37 @@ def make_lr_scheduler(optimizer, cfg: Any):
 
     return LambdaLR(optimizer, lr_lambda)
 
+# def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
+#     logger = TrainerLogger(
+#         name="Trainer",
+#         file_name=str(RUN_FILES.train_log) if run else None,
+#         log_dir=run.get_metadata_dir() if run else None,
+#         level=logging.INFO,
+#         propagate=False,  # recommended to avoid double-logging via root
+#     )
+#     if run:
+#         logger.info("logger initialized")
+#         logger.flush()
+
+#     return logger
+
 def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
     logger = TrainerLogger(
-        name="Trainer",
+        name="Trainer",  # avoid collisions across runs
+        log_dir=run.get_metadata_dir() if run else None,  # writes metadata/train.log
         file_name=str(RUN_FILES.train_log) if run else None,
-        log_dir=run.get_metadata_dir() if run else None,
-        level=logging.INFO,
-        propagate=False,  # recommended to avoid double-logging via root
+        level=logging.DEBUG, # global logger threshold (allow DEBUG messages through)
+        propagate=False, # do NOT propagate to root
+        file_level=logging.DEBUG, # file captures everything
+        console=True,
+        console_level=logging.INFO, # console prints high-level only
     )
+
+    # Ensure that the logger is properly initialized and the log file is created 
     if run:
-        logger.info("logger initialized")
+        logger.info("Logger initialized")
         logger.flush()
-        
+
     return logger
 
 
