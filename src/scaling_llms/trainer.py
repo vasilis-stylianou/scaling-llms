@@ -1,35 +1,35 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 import importlib
 import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 import torch
 import json
 
-from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
+from scaling_llms.constants import RUN_FILES, METRIC_CATS
 from scaling_llms.tracking.registries import RunManager
 from scaling_llms.tracking.checkpoint import CheckpointManager
-from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
-    create_infinite_loader,
     compute_grad_zero_frac,
     compute_grad_norm,
     compute_param_norm,
     compute_grad_to_param_ratio,
+    compute_opt_steps_from_token_budget,
     make_autocast_context,
     make_lr_scheduler,
-    make_timer,
+    make_train_iterator,
     make_trainer_logger,
+    make_timer,
 )
 
 
 # -------------------------
 # HELPER FUNCTIONS
 # -------------------------
-def get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
+def _get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
     """Extract model class and config class info for serialization."""
     model_class = type(model)
     config_class = type(model.cfg)
@@ -41,7 +41,7 @@ def get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
     }
 
 
-def load_model_class(class_info: dict[str, str]) -> type:
+def _load_model_class(class_info: dict[str, str]) -> type:
     """Dynamically import and return the model class."""
     module = importlib.import_module(class_info["module"])
     return getattr(module, class_info["class_name"])
@@ -52,9 +52,10 @@ def load_model_class(class_info: dict[str, str]) -> type:
 # -------------------------
 @dataclass
 class TrainerConfig(BaseJsonConfig):
+
     # Optimization
-    num_steps: int
-    lr: float
+    num_steps: int | None = None
+    lr: float = 3e-4
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.1
@@ -62,6 +63,16 @@ class TrainerConfig(BaseJsonConfig):
     accum_steps: int = 1
     grad_clip_norm: float | None = 1.0
     device: str = "auto"  # "auto" | "cpu" | "cuda"
+
+    # Training Budget (optional; alternative to num_steps, used to derive num_steps based on tokens/step)
+    # NOTE: all three must be provided if num_steps is None
+    # FORMULA: num_steps = ceil(train_tokens_budget / (micro_batch_size * seq_len * accum_steps)) 
+    train_tokens_budget: int | None = None
+    micro_batch_size: int | None = None  # single GPU
+    seq_len: int | None = None
+
+    # DataLoader
+    iter_mode: Literal["infinite", "single-batch"] = "infinite"
 
     # LR Scheduler
     lr_schedule: str | None = None  # "none", "cosine", "linear"
@@ -81,6 +92,9 @@ class TrainerConfig(BaseJsonConfig):
 
     # Reproducibility
     seed: int = 1234
+
+    # Derived (not user inputs)
+    tokens_per_step: int = dc_field(init=False) # tokens per optimizer step (includes accum)
     
     # --- FACTORIES ---
     @classmethod
@@ -93,6 +107,7 @@ class TrainerConfig(BaseJsonConfig):
     # --- PRIVATE METHODS ---
     def __post_init__(self) -> None:
         self._configure_device()
+        self._derive_steps_from_budget_if_needed()
         self._validate_lr_scheduler()
 
     def _configure_device(self) -> None:
@@ -114,6 +129,22 @@ class TrainerConfig(BaseJsonConfig):
             self.precision = "bf16"
         elif "v100" in self.device_name:
             self.precision = "fp16"
+
+    def _derive_steps_from_budget_if_needed(self) -> None:
+        # If num_steps is explicitly provided, we don't touch it.
+        if self.num_steps is not None:
+            return
+
+        # Otherwise, we require the token budget parameters to be provided 
+        # and derive num_steps from the budget.
+        info = compute_opt_steps_from_token_budget(
+            train_tokens_budget=self.train_tokens_budget,
+            micro_batch_size=self.micro_batch_size,
+            seq_len=self.seq_len,
+            accum_steps=self.accum_steps
+        )
+        self.tokens_per_step = info['tokens_per_step']
+        self.num_steps = info['num_steps']
 
     def _validate_lr_scheduler(self) -> None:
         if self.num_steps <= 0:
@@ -161,8 +192,12 @@ class Trainer:
         self.device = cfg.device
         self.run = run
 
-        # TODO 
-        self.train_iter = create_infinite_loader(train_dl)
+        # Configure training data iterator
+        self.train_iter = (
+            make_train_iterator(train_dl, cfg.iter_mode) 
+            if train_dl is not None 
+            else None
+        )
 
         # Configure training objects
         self.scaler = torch.cuda.amp.GradScaler(
@@ -256,13 +291,13 @@ class Trainer:
             class_info = json.loads(model_class_path.read_text())
 
             # Dynamically load the model class
-            ModelClass = load_model_class({
+            ModelClass = _load_model_class({
                 "module": class_info["model_module"],
                 "class_name": class_info["model_class_name"]
             })
             
             # Dynamically load the config class
-            ConfigClass = load_model_class({
+            ConfigClass = _load_model_class({
                 "module": class_info["config_module"],
                 "class_name": class_info["config_class_name"]
             })
@@ -305,7 +340,7 @@ class Trainer:
         # Log model metadata on first run (step_idx == 0)
         if self.step_idx == 0 and self.run is not None:
             self.run.log_metadata(self.model.cfg, RUN_FILES.model_config, format="json")
-            self.run.log_metadata(get_model_class_info(self.model), RUN_FILES.model_class, format="json")
+            self.run.log_metadata(_get_model_class_info(self.model), RUN_FILES.model_class, format="json")
             self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
         
         self.logger.log_start(
@@ -331,7 +366,6 @@ class Trainer:
             if (
                 (self.eval_dl is not None) and
                 (self.cfg.eval_log_freq > 0) and
-                (self.step_idx > 0) and  # Avoid logging eval metrics at step_idx=0
                 (self.step_idx % self.cfg.eval_log_freq == 0)
             ):
                 # Compute and log eval metrics

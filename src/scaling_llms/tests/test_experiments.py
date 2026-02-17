@@ -35,7 +35,6 @@ def data_kwargs():
         eval_batch_size=8,
         train_split="train[:1000]",
         eval_split="test[:1000]",
-        train_tokens_budget=1024,
         start_sample_idx=0,
     )
 

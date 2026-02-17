@@ -18,7 +18,6 @@ def base_configs():
         local_data_dir=LOCAL_DEV_DATA_DIR,
         train_split="train[:1000]",
         eval_split="test[:1000]",
-        train_tokens_budget=1_000_000,
         start_sample_idx=0,
     )
 
@@ -62,9 +61,6 @@ def test_data_loaders(base_configs, gdrive_overrides):
     msg = f"Expected {expected_num_train_tokens:,} train tokens but got {actual_num_train_tokens:,}."
     assert expected_num_train_tokens == actual_num_train_tokens, msg
 
-    msg = f"Expected at most {cfg.train_tokens_budget:,} train tokens but got {actual_num_train_tokens:,}."
-    assert actual_num_train_tokens <= cfg.train_tokens_budget, msg
-
     # Verify shapes
     xb_train, yb_train = next(iter(train_dl))
     xb_eval, yb_eval = next(iter(eval_dl))
@@ -81,7 +77,7 @@ def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
     """
     Dataloaders with the same HuggingFace dataset configs should reuse 
     the same local memmaps and not create new datasets in the Data Registry, 
-    even if other config parameters (e.g. batch size, seq_len, train_tokens_budget, start_sample_idx) 
+    even if other config parameters (e.g. batch size, seq_len, start_sample_idx) 
     are different. 
     This tests verifies that the caching mechanism for token memmaps is working correctly 
     and that local memmaps are reused when appropriate.
@@ -108,7 +104,6 @@ def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
         "same configs": {},
         "different batch size": dict(train_batch_size=16),
         "different seq_len": dict(seq_len=256),
-        "different train_tokens_budget": dict(train_tokens_budget=500_000),
         "different start_sample_idx": dict(start_sample_idx=100),
     }
     for msg,diff_configs in msg2diff_configs.items():

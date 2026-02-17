@@ -2,7 +2,6 @@
 
 import logging
 import math
-# import random
 from contextlib import nullcontext
 from typing import Any
 import torch
@@ -13,11 +12,28 @@ from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.timer import DeviceTimer
 
 
+# -----------------------------
+# DATALOADER MODES
+# -----------------------------
 def create_infinite_loader(loader):
     while True:
         for batch in loader:
             yield batch
 
+
+def create_single_batch_loader(loader):
+    first_batch = next(iter(loader))
+    while True:
+        yield first_batch
+
+
+def make_train_iterator(loader, mode: str):
+    if mode == "infinite":
+        return create_infinite_loader(loader)
+    elif mode == "single-batch":
+        return create_single_batch_loader(loader)
+    else:
+        raise ValueError(f"Unknown iter_mode: {mode}")
 
 # -----------------------------
 # METRIC_CATS/DIAGNOSTICS
@@ -123,20 +139,56 @@ def make_lr_scheduler(optimizer, cfg: Any):
 
     return LambdaLR(optimizer, lr_lambda)
 
-# def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
-#     logger = TrainerLogger(
-#         name="Trainer",
-#         file_name=str(RUN_FILES.train_log) if run else None,
-#         log_dir=run.get_metadata_dir() if run else None,
-#         level=logging.INFO,
-#         propagate=False,  # recommended to avoid double-logging via root
-#     )
-#     if run:
-#         logger.info("logger initialized")
-#         logger.flush()
 
-#     return logger
+# -----------------------------
+# TOKEN BUDGETING
+# -----------------------------
+def compute_opt_steps_from_token_budget(
+    train_tokens_budget: int, 
+    micro_batch_size: int, 
+    seq_len: int, 
+    accum_steps: int
+) -> dict[str, int]:
+    def _ceil_div(a: int, b: int) -> int:
+        """Helper function to compute ceiling division of a by b."""
+        return (a + b - 1) // b
+    
+    # Validate inputs
+    if train_tokens_budget is None:
+        raise ValueError(
+            "train_tokens_budget is None. "
+            "Provide train_tokens_budget + (micro_batch_size, seq_len, accum_steps)."
+        )
 
+    if (micro_batch_size is None) or (seq_len is None):
+        raise ValueError(
+            "To derive num_steps you must provide "
+            "micro_batch_size and seq_len (and accum_steps)."
+        )
+
+    if train_tokens_budget <= 0:
+        raise ValueError(f"train_tokens_budget must be > 0; got {train_tokens_budget}")
+    if micro_batch_size <= 0:
+        raise ValueError(f"micro_batch_size must be > 0; got {micro_batch_size}")
+    if seq_len <= 0:
+        raise ValueError(f"seq_len must be > 0; got {seq_len}")
+    if accum_steps <= 0:
+        raise ValueError(f"accum_steps must be > 0; got {accum_steps}")
+
+    # Compute tokens per step: micro_batch_size * seq_len * accum_steps
+    tokens_per_step = int(micro_batch_size) * int(seq_len) * int(accum_steps)
+    if tokens_per_step <= 0:
+        raise ValueError(f"Invalid tokens_per_step computed: {tokens_per_step}")
+
+    return {
+        'tokens_per_step': tokens_per_step,
+        'num_steps': max(1, _ceil_div(int(train_tokens_budget), tokens_per_step))
+    }
+
+
+# -----------------------------
+# LOGGING
+# -----------------------------
 def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
     logger = TrainerLogger(
         name="Trainer",  # avoid collisions across runs
@@ -155,22 +207,3 @@ def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
         logger.flush()
 
     return logger
-
-
-# # -----------------------------
-# # CHECKPOINTING
-# # -----------------------------
-# def _get_rng_state() -> dict[str, Any]:
-#     return {
-#         "python": random.getstate(),
-#         "torch": torch.get_rng_state(),
-#         "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-#     }
-
-# def _set_rng_state(rng: dict[str, Any]) -> None:
-#     if rng.get("python") is not None:
-#         random.setstate(rng["python"])
-#     if rng.get("torch") is not None:
-#         torch.set_rng_state(rng["torch"])
-#     if torch.cuda.is_available() and rng.get("cuda") is not None:
-#         torch.cuda.set_rng_state_all(rng["cuda"])

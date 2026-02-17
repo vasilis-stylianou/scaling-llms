@@ -249,22 +249,18 @@ class DeterministicTokenWindows(Dataset):
         tokens_mmap_buffer: np.memmap,
         seq_len: int,
         seed: int,
-        num_samples: int,
     ):
         self.tokens_memmap_buffer = tokens_mmap_buffer
         self.seq_len = int(seq_len)
         self.seed = int(seed)
-        self.num_samples = int(num_samples)
 
         # Init max valid start index for a window of length seq_len
         self.max_idx = len(self.tokens_memmap_buffer) - (self.seq_len + 1)
         if self.max_idx <= 0:
             raise ValueError("Token buffer too small for seq_len")
-        if self.num_samples <= 0:
-            raise ValueError("num_samples must be > 0")
 
     def __len__(self) -> int:
-        return self.num_samples
+        return 2**63 - 1 # effectively infinite (max int64)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         # Hash sample idx to get a pseudo-random but deterministic window start
@@ -294,7 +290,7 @@ class OffsetDataset(Dataset):
             raise ValueError("Invalid start")
 
     def __len__(self) -> int:
-        return len(self.dataset) - self.offset
+        return 2**63 - 1 # effectively infinite
 
     def __getitem__(self, i: int):
         return self.dataset[self.offset + i]
@@ -336,9 +332,8 @@ class DataConfig(BaseJsonConfig):
     # Data dir to setup cache directories for HF datasets and tokenized memmaps.
     local_data_dir: Path = LOCAL_DATA_DIR
 
-    # Training budget (tokens) + resume cursor (samples)
-    train_tokens_budget: int = 1_000_000
-    start_sample_idx: int = 0  # resume cursor (global sample index)
+    # Resume cursor (global sample index) for deterministic train schedule; effectively an offset into the infinite stream of random windows.
+    start_sample_idx: int = 0
 
     # Always start with 0 for deterministic bring-up
     num_workers: int = 0
@@ -357,15 +352,14 @@ class DataConfig(BaseJsonConfig):
         self.tokenized_cache_dir = Path(self.local_data_dir) / TOKENIZED_CACHE_DIR_NAME
 
         self._configure_local_mmap_paths()
-        self._validate_num_samples()
+        self._validate_start_sample_idx()
 
-    def _validate_num_samples(self):
-        # Validate that start_sample_idx is within the total number of samples given the train_tokens_budget and seq_len
-        num_samples = max(1, self.train_tokens_budget // self.seq_len)
-        if self.start_sample_idx >= num_samples:
+    def _validate_start_sample_idx(self):
+        if self.start_sample_idx < 0:
             raise ValueError(
-                f"start_sample_idx={self.start_sample_idx} >= num_samples={num_samples} based on train_tokens_budget={self.train_tokens_budget} and seq_len={self.seq_len}"
+                f"start_sample_idx must be >= 0, got {self.start_sample_idx}"
             )
+        # NOTE: no upper bound check; dataset is effectively infinite.
         
     def _configure_local_mmap_paths(self):
         local_dataset_path = self.tokenized_cache_dir / self.dataset_name
@@ -493,15 +487,12 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
     eval_tokens_buffer = np.memmap(cfg.local_eval_mmap_path, mode="r", dtype=dtype)
 
     # --- STEP 4: Create deterministic train schedule (token-budget driven) ---
-    # 1 sample == 1 sequence of length seq_len
-
     # Train DS: deterministic random windows, with global sample index offset for resume
     logger.log_dataloader_info("Creating deterministic training dataset with random windows...")
     deterministic_train_ds = DeterministicTokenWindows(
         tokens_mmap_buffer=train_tokens_buffer,
         seq_len=cfg.seq_len,
         seed=cfg.seed,
-        num_samples=max(1, cfg.train_tokens_budget // cfg.seq_len),
     )
     train_ds = OffsetDataset(deterministic_train_ds, offset_start=cfg.start_sample_idx)
 

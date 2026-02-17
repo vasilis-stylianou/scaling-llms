@@ -58,6 +58,16 @@ def setup_console_logging(
         handler.setFormatter(formatter)
         root.addHandler(handler)
 
+    # Silence noisy third-party libraries (AFTER basicConfig)
+    for lib in (
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "datasets",
+        "huggingface_hub",
+        "huggingface_hub.utils._http",
+    ):
+        logging.getLogger(lib).setLevel(logging.WARNING)
 
 @dataclass(slots=True)
 class BaseLogger:
