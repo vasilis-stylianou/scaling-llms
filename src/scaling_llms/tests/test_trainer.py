@@ -251,6 +251,31 @@ def test_trainer_config_token_budget_derivation_and_json_roundtrip(tmp_path):
     assert loaded_cfg.num_steps == original_cfg.num_steps
 
 
+def test_iter_mode_single_batch(dummy_model, dummy_dataloader):
+    """`single-batch` mode should always return the same batch from the iterator."""
+    cfg = TrainerConfig(num_steps=1, lr=1e-3, device="cpu", iter_mode="single-batch")
+    trainer = Trainer(cfg=cfg, model=dummy_model, train_dl=dummy_dataloader, eval_dl=None, run=None)
+
+    b1 = next(trainer.train_iter)
+    b2 = next(trainer.train_iter)
+
+    assert torch.equal(b1[0], b2[0])
+    assert torch.equal(b1[1], b2[1])
+
+
+def test_iter_mode_infinite(dummy_model, dummy_dataloader):
+    """`infinite` mode should cycle through batches (consecutive yields differ)."""
+    cfg = TrainerConfig(num_steps=2, lr=1e-3, device="cpu", iter_mode="infinite")
+    trainer = Trainer(cfg=cfg, model=dummy_model, train_dl=dummy_dataloader, eval_dl=None, run=None)
+
+    b1 = next(trainer.train_iter)
+    b2 = next(trainer.train_iter)
+
+    # With the dummy_dataloader (batch_size=4, num_samples=20) consecutive
+    # batches should typically differ when iter_mode="infinite".
+    assert not (torch.equal(b1[0], b2[0]) and torch.equal(b1[1], b2[1]))
+
+
 # ============================================================
 # TESTS FOR TRAINER INITIALIZATION
 # ============================================================
