@@ -180,10 +180,8 @@ def compute_opt_steps_from_token_budget(
     if tokens_per_step <= 0:
         raise ValueError(f"Invalid tokens_per_step computed: {tokens_per_step}")
 
-    return {
-        'tokens_per_step': tokens_per_step,
-        'num_steps': max(1, _ceil_div(int(train_tokens_budget), tokens_per_step))
-    }
+    # Return only the derived number of optimizer steps (int)
+    return max(1, _ceil_div(int(train_tokens_budget), tokens_per_step))
 
 
 # -----------------------------
@@ -192,8 +190,8 @@ def compute_opt_steps_from_token_budget(
 def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
     logger = TrainerLogger(
         name="Trainer",  # avoid collisions across runs
-        log_dir=run.get_metadata_dir() if run else None,  # writes metadata/train.log
-        file_name=str(RUN_FILES.train_log) if run else None,
+        log_dir=run.get_metadata_dir() if run is not None else None,  # writes metadata/train.log
+        file_name=str(RUN_FILES.train_log) if run is not None else None,
         level=logging.DEBUG, # global logger threshold (allow DEBUG messages through)
         propagate=False, # do NOT propagate to root
         file_level=logging.DEBUG, # file captures everything

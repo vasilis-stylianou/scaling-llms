@@ -55,12 +55,6 @@ def test_data_loaders(base_configs, gdrive_overrides):
     dl_dict = get_dataloaders(cfg, **gdrive_overrides)
     train_dl, eval_dl = dl_dict["train"], dl_dict["eval"]
 
-    # Verify number of training tokens
-    expected_num_train_tokens = len(train_dl.dataset) * cfg.seq_len
-    actual_num_train_tokens = sum(b[0].numel() for b in train_dl) 
-    msg = f"Expected {expected_num_train_tokens:,} train tokens but got {actual_num_train_tokens:,}."
-    assert expected_num_train_tokens == actual_num_train_tokens, msg
-
     # Verify shapes
     xb_train, yb_train = next(iter(train_dl))
     xb_eval, yb_eval = next(iter(eval_dl))

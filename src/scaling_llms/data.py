@@ -391,8 +391,8 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
 
     logger = DataLogger(
         name="DataLoader",
-        file_name=str(RUN_FILES.data_log) if run else None,
-        log_dir=run.get_metadata_dir() if run else None,  # writes metadata/train.log
+        file_name=str(RUN_FILES.data_log) if run is not None else None,
+        log_dir=run.get_metadata_dir() if run is not None else None,  # writes metadata/train.log
         level=logging.INFO,
     )
     logger.log_start(cfg)
@@ -411,7 +411,7 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
         eval_batch_size=cfg.eval_batch_size, 
         dtype=f"np.{np.dtype(dtype).name}", 
     )
-
+    
     # Init Google Drive data registry for managing data paths and copying between local and drive
     data_registry = GoogleDriveDataRegistry(**gdrive_overrides)
     gdrive_dataset_path = data_registry.find_dataset_path(

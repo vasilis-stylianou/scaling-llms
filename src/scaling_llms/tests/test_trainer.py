@@ -220,6 +220,37 @@ def test_trainer_config_json_roundtrip(tmp_path):
     assert loaded_cfg.device_name is not None
 
 
+def test_trainer_config_token_budget_derivation_and_json_roundtrip(tmp_path):
+    """When num_steps is None, derive it from a token budget and roundtrip via JSON."""
+    # Choose values where tokens_per_step = micro_batch_size * seq_len * accum_steps
+    train_tokens_budget = 10000
+    micro_batch_size = 4
+    seq_len = 16
+    accum_steps = 2
+
+    original_cfg = TrainerConfig(
+        num_steps=None,
+        lr=1e-3,
+        device="cpu",
+        train_tokens_budget=train_tokens_budget,
+        micro_batch_size=micro_batch_size,
+        seq_len=seq_len,
+        accum_steps=accum_steps,
+    )
+
+    expected_tokens_per_step = micro_batch_size * seq_len * accum_steps
+    expected_num_steps = (train_tokens_budget + expected_tokens_per_step - 1) // expected_tokens_per_step
+
+    assert original_cfg.num_steps == expected_num_steps
+
+    # JSON roundtrip should preserve the derived fields
+    json_path = tmp_path / "trainer_config_budget.json"
+    log_as_json(original_cfg, json_path)
+    loaded_cfg = TrainerConfig.from_json(json_path)
+
+    assert loaded_cfg.num_steps == original_cfg.num_steps
+
+
 # ============================================================
 # TESTS FOR TRAINER INITIALIZATION
 # ============================================================

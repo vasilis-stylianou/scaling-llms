@@ -92,9 +92,6 @@ class TrainerConfig(BaseJsonConfig):
 
     # Reproducibility
     seed: int = 1234
-
-    # Derived (not user inputs)
-    tokens_per_step: int = dc_field(init=False) # tokens per optimizer step (includes accum)
     
     # --- FACTORIES ---
     @classmethod
@@ -137,14 +134,12 @@ class TrainerConfig(BaseJsonConfig):
 
         # Otherwise, we require the token budget parameters to be provided 
         # and derive num_steps from the budget.
-        info = compute_opt_steps_from_token_budget(
+        self.num_steps = compute_opt_steps_from_token_budget(
             train_tokens_budget=self.train_tokens_budget,
             micro_batch_size=self.micro_batch_size,
             seq_len=self.seq_len,
-            accum_steps=self.accum_steps
+            accum_steps=self.accum_steps,
         )
-        self.tokens_per_step = info['tokens_per_step']
-        self.num_steps = info['num_steps']
 
     def _validate_lr_scheduler(self) -> None:
         if self.num_steps <= 0:
