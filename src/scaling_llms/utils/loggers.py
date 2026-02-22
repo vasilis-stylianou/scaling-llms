@@ -213,6 +213,7 @@ class TrainerLogger(BaseLogger):
         n_embd: int,
         vocab_size: str,
         device: str,
+        device_name: str,
         precision: str,
         num_steps: int,
         accum_steps: int,
@@ -228,7 +229,10 @@ class TrainerLogger(BaseLogger):
             "[model] params=%s | n_layer=%d | n_embd=%d | vocab_size=%s",
             model_params, n_layer, n_embd, vocab_size
         )
-        self.info("[device] device=%s | precision=%s", device, precision)
+        self.info(
+            "[device] device=%s | device_name=%s | precision=%s", 
+            device, device_name, precision
+        )
         self.info(
             "[optimization] num_steps=%d | accum_steps=%d | lr=%.3e",
             num_steps, accum_steps, lr,

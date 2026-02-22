@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from scaling_llms.trainer import Trainer, TrainerConfig
 from scaling_llms.models import GPTModel, GPTConfig
-from scaling_llms.tracking.registries import RunManager, log_as_json
+from scaling_llms.registries import RunManager, log_as_json
 from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
 
 

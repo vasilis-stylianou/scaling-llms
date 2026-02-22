@@ -13,7 +13,7 @@ from scaling_llms.constants import (
 )
 from scaling_llms.data import DataConfig, get_dataloaders
 from scaling_llms.models import GPTConfig, GPTModel
-from scaling_llms.tracking.registries import GoogleDriveRunRegistry
+from scaling_llms.registries import GoogleDriveRunRegistry
 from scaling_llms.trainer import Trainer, TrainerConfig
 
 
@@ -29,6 +29,7 @@ class ExperimentRunner:
     - delete_run: Delete a specific run within an experiment.
 
     """
+
     def __init__(self, exp_name: str, run_name: str, is_dev: bool = True) -> None:
         self.exp_name = exp_name
         self.run_name = run_name
@@ -44,11 +45,14 @@ class ExperimentRunner:
         gpt_hparams: dict[str, Any],
         trainer_kwargs: dict[str, Any],
         max_steps: int | None = None,
+        overwrite: bool = False,
     ) -> Trainer:
         data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
-        with self._managed_run(self.exp_name, self.run_name, resume=False) as run:
+        with self._managed_run(
+            self.exp_name, self.run_name, resume=False, overwrite=overwrite
+        ) as run:
             trainer = self._init_trainer(
                 run=run,
                 data_cfg=data_cfg,
@@ -63,8 +67,12 @@ class ExperimentRunner:
         ckpt_filename: str = RUN_FILES.best_ckpt,
         max_steps: int | None = None,
     ) -> Trainer:
-        with self._managed_run(self.exp_name, self.run_name, resume=True) as run:
-            trainer = self._trainer_from_checkpoint(run=run, ckpt_filename=ckpt_filename)
+        with self._managed_run(
+            self.exp_name, self.run_name, resume=True, overwrite=False
+        ) as run:
+            trainer = self._trainer_from_checkpoint(
+                run=run, ckpt_filename=ckpt_filename
+            )
             trainer.train(max_steps=max_steps)
             return trainer
 
@@ -76,7 +84,9 @@ class ExperimentRunner:
         ckpt_filename: str,
         max_steps: int | None = None,
     ) -> Trainer:
-        with self._managed_run(self.exp_name, self.run_name, resume=False) as new_run:
+        with self._managed_run(
+            self.exp_name, self.run_name, resume=False, overwrite=False
+        ) as new_run:
             new_run.log_metadata(
                 {
                     "initialized_from": {
@@ -90,24 +100,39 @@ class ExperimentRunner:
             )
             data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
             new_run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")
-            dl_dict = get_dataloaders(data_cfg, new_run, project_subdir=self.project_subdir)
+            dl_dict = get_dataloaders(
+                data_cfg, new_run, project_subdir=self.project_subdir
+            )
 
             # Open old run just long enough to load ckpt into a Trainer object
-            with self._managed_run(ckpt_exp_name, ckpt_run_name, resume=True) as old_run:
-                # Validate sequence length matches between old and new runs 
-                old_data_kwargs = json.loads(old_run.get_metadata_path(RUN_FILES.data_config).read_text())  # Ensure data config is present in old run metadata
+            with self._managed_run(
+                ckpt_exp_name,
+                ckpt_run_name,
+                resume=True,
+                overwrite=False,
+            ) as old_run:
+                # Validate sequence length matches between old and new runs
+                old_data_kwargs = json.loads(
+                    old_run.get_metadata_path(RUN_FILES.data_config).read_text()
+                )  # Ensure data config is present in old run metadata
                 print(old_data_kwargs)
                 if old_data_kwargs["seq_len"] != data_kwargs["seq_len"]:
-                    self.delete_run(confirm=False)  # Clean up new run since it won't be usable
+                    self.delete_run(
+                        confirm=False
+                    )  # Clean up new run since it won't be usable
                     raise ValueError(
                         f"Sequence length mismatch between old run ({old_data_kwargs['seq_len']}) and new run ({data_kwargs['seq_len']}). "
                         "Checkpoint loading may fail."
                     )
 
-                # Validate vocab size matches between old and new runs 
-                old_model_kwargs = json.loads(old_run.get_metadata_path(RUN_FILES.model_config).read_text())
+                # Validate vocab size matches between old and new runs
+                old_model_kwargs = json.loads(
+                    old_run.get_metadata_path(RUN_FILES.model_config).read_text()
+                )
                 if old_model_kwargs["vocab_size"] != dl_dict["info"]["vocab_size"]:
-                    self.delete_run(confirm=False)  # Clean up new run since it won't be usable
+                    self.delete_run(
+                        confirm=False
+                    )  # Clean up new run since it won't be usable
                     raise ValueError(
                         f"Vocab size mismatch between old run ({old_model_kwargs['vocab_size']}) and new run ({dl_dict['info']['vocab_size']}). "
                         "Checkpoint loading may fail."
@@ -135,14 +160,27 @@ class ExperimentRunner:
 
     # --- Internal methods ---
     @contextmanager
-    def _managed_run(self, exp_name, run_name, resume: bool) -> Iterator[Any]:
-        run = self.registry.start_run(experiment_name=exp_name, run_name=run_name, resume=resume)
+    def _managed_run(
+        self,
+        exp_name,
+        run_name,
+        resume: bool,
+        overwrite: bool,
+    ) -> Iterator[Any]:
+        run = self.registry.start_run(
+            experiment_name=exp_name,
+            run_name=run_name,
+            resume=resume,
+            overwrite=overwrite,
+        )
         try:
             yield run
         finally:
             run.close()
 
-    def _build_model(self, data_cfg: DataConfig, vocab_size: int, gpt_hparams: dict[str, Any]) -> GPTModel:
+    def _build_model(
+        self, data_cfg: DataConfig, vocab_size: int, gpt_hparams: dict[str, Any]
+    ) -> GPTModel:
         model_cfg = GPTConfig(
             seq_len=data_cfg.seq_len,
             vocab_size=vocab_size,
@@ -185,5 +223,3 @@ class ExperimentRunner:
             train_dl=dl_dict["train"],
             eval_dl=dl_dict["eval"],
         )
-
-    

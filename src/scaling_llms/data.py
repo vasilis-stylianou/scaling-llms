@@ -22,7 +22,7 @@ from scaling_llms.constants import (
     TOKENIZED_CACHE_DIR_NAME,
     RUN_FILES
 )
-from scaling_llms.tracking.registries import GoogleDriveDataRegistry
+from scaling_llms.registries import GoogleDriveDataRegistry
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger
 

@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 import shutil
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 from zoneinfo import ZoneInfo
 
 from scaling_llms.constants import (
@@ -16,7 +16,7 @@ from scaling_llms.constants import (
     METRIC_CATS,
     RUN_DIRS, 
 )
-from scaling_llms.tracking.trackers import (
+from scaling_llms.utils.trackers import (
     TrackerConfig,
     TrackerDict,
     JsonlTracker,
@@ -29,6 +29,7 @@ from scaling_llms.utils.loggers import BaseLogger
 # -----------------------------
 # HELPER FUNCTIONS
 # -----------------------------
+# JSON Logging
 def _json_default(o: Any):
     if isinstance(o, BaseJsonConfig):
         return o.to_json()
@@ -63,6 +64,75 @@ def log_as_json(obj, path) -> Path:
     os.replace(tmp, path)
     return path
 
+
+# Image Logging
+def _get_figure_backend(fig: Any) -> Literal["plotly", "matplotlib"]:
+    """
+    Returns the plotting backend of `fig`.
+
+    Possible returns:
+        - "plotly"
+        - "matplotlib"
+    """
+
+    # ---- Plotly ----
+    try:
+        import plotly.graph_objects as go
+        if isinstance(fig, go.Figure):
+            return "plotly"
+    except Exception:
+        pass
+
+    # ---- Matplotlib ----
+    try:
+        from matplotlib.figure import Figure
+        from matplotlib.axes import Axes
+
+        if isinstance(fig, Figure):
+            return "matplotlib"
+
+        # Axes also counts as matplotlib
+        if isinstance(fig, Axes):
+            return "matplotlib"
+
+        # pyplot module figure (has gca, savefig, etc.)
+        if hasattr(fig, "savefig") and hasattr(fig, "gca"):
+            return "matplotlib"
+    except Exception:
+        pass
+
+    raise ValueError("Could not determine figure backend; got type %s", type(fig))
+
+
+def log_as_png(fig: Any, path) -> Path:
+    backend = _get_figure_backend(fig)
+
+    # Overwrite existing images
+    path = Path(path)
+    if backend == "plotly":
+        fig.write_image(str(path))
+    elif backend == "matplotlib":
+        fig.savefig(str(path))
+    else:
+        raise ValueError(f"Unsupported figure backend: {backend}")
+
+    return path
+
+
+def log_as_html(fig: Any, path) -> Path:
+    backend = _get_figure_backend(fig)
+
+    # Overwrite existing images
+    path = Path(path)
+    if backend == "plotly":
+        fig.write_html(str(path))
+    else:
+        raise ValueError(f"Unsupported figure backend: {backend}")
+
+    return path
+
+
+# ID Generation
 def _get_next_id(prefix: str, parent_dir: Path) -> int:
     existing_ids: list[int] = []
     for p in parent_dir.iterdir():
@@ -187,9 +257,13 @@ class RunManager:
         
         return metric_path
     
-    def get_metadata_path(self, filename: str) -> Path: 
+    def get_metadata_path(self, filename: str, subdir_name: str | None = None) -> Path: 
         
-        metadata_path = self.get_metadata_dir() / filename
+        metadata_dir = self.get_metadata_dir() 
+        if subdir_name is not None:
+            metadata_dir = metadata_dir / subdir_name
+
+        metadata_path = metadata_dir / filename
         if not metadata_path.exists():
             raise FileNotFoundError(f"Metadata file does not exist: {metadata_path}")
 
@@ -215,21 +289,38 @@ class RunManager:
             self.logger.debug("[trackers] Logging tensorboard metrics for category '%s' at step %d", cat, step)
             tracker_dict[cat].log_metrics(step=step, metrics=metrics)
 
-    def log_metadata(self, obj: Any, filename: str, format: str = "json") -> Path:
-        if format != "json":
+    def log_metadata(
+        self, 
+        obj: Any, 
+        filename: str, 
+        format: str = "json",
+        subdir_name: str | None = None,
+    ) -> Path:
+        if format == "json":
+            log_fn = log_as_json
+        elif format == "png":
+            log_fn = log_as_png
+        elif format == "html":
+            log_fn = log_as_html
+        else:
             raise NotImplementedError(
                 f"log_metadata format '{format}' is not implemented yet. "
-                "Only 'json' is currently supported."
+                "Only 'json', 'png', and 'html' are currently supported."
             )
 
-        if not filename.endswith(".json"):
-            filename = f"{filename}.json"
+        if not filename.endswith(f".{format}"):
+            filename = f"{filename}.{format}"
 
-        path = self.get_metadata_dir() / filename
+        log_dir = self.get_metadata_dir()
+        if subdir_name is not None:
+            log_dir = log_dir / subdir_name
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+        path = log_dir / filename
 
         self.logger.debug("[metadata] Logging metadata to %s", path)
 
-        return log_as_json(obj, path)
+        return log_fn(obj, path)
 
     def start(self, resume=False) -> None:
         """
@@ -336,11 +427,12 @@ class BaseRunRegistry:
             raise FileNotFoundError(f"Experiment directory does not exist: {exp_dir}")
         return exp_dir
 
-    def get_runs_as_df(self) -> pd.DataFrame:
-        query = (
-            "SELECT * "
-            "FROM runs ORDER BY experiment_name, created_at"
-        )
+    def get_runs_as_df(self, experiment_name: str | None = None) -> pd.DataFrame:
+        query = "SELECT * FROM runs "
+        if experiment_name is not None:
+            query += f"WHERE experiment_name = '{experiment_name}' "
+        query += "ORDER BY experiment_name, created_at "
+
         with self._connect() as con:
             df = pd.read_sql_query(query, con)
 
@@ -372,15 +464,19 @@ class BaseRunRegistry:
         experiment_name: str,
         run_name: str,
         resume: bool = False,
+        overwrite: bool = False,
     ) -> RunManager:
         # Resume existing run if requested
         if self._run_exists(experiment_name, run_name):
             if resume:
                 return self.connect_run(experiment_name, run_name)
-            raise ValueError(
-                f"Run already exists: ({experiment_name}, {run_name}). "
-                "Set resume=True to reuse it."
-            )
+            if overwrite:
+                self.delete_run(experiment_name, run_name, confirm=False)
+            else:
+                raise ValueError(
+                    f"Run already exists: ({experiment_name}, {run_name}). "
+                    "Set resume=True to reuse it or overwrite=True to replace it."
+                )
 
         # Create a new run directory 
         exp_dir = self.artifacts_root / experiment_name
@@ -891,5 +987,3 @@ class GoogleDriveDataRegistry(BaseDataRegistry):
         self.project_root = configs.project_root
         self.registry_root = configs.data_registry
         super().__init__(db_path=configs.datasets_db_path, datasets_root=configs.tokenized_datasets_root)
-
-    

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scaling_llms.constants import LOCAL_DEV_DATA_DIR, PROJECT_DEV_NAME
 from scaling_llms.data import DataConfig, get_dataloaders
-from scaling_llms.tracking.registries import GoogleDriveDataRegistry
+from scaling_llms.registries import GoogleDriveDataRegistry
 
 @pytest.fixture
 def base_configs():

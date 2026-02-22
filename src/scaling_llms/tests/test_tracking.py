@@ -15,8 +15,8 @@ from scaling_llms.constants import (
     METRIC_SCHEMA,
 )
 from scaling_llms.models import GPTConfig, GPTModel
-from scaling_llms.tracking.checkpoint import CheckpointManager
-from scaling_llms.tracking.registries import (
+from scaling_llms.utils.checkpoint import CheckpointManager
+from scaling_llms.registries import (
     GoogleDriveDataRegistry,
     GoogleDriveRunRegistry,
 )

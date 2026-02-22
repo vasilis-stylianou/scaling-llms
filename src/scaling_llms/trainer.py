@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
 import importlib
 import logging
 import math
@@ -9,8 +9,8 @@ import torch
 import json
 
 from scaling_llms.constants import RUN_FILES, METRIC_CATS
-from scaling_llms.tracking.registries import RunManager
-from scaling_llms.tracking.checkpoint import CheckpointManager
+from scaling_llms.registries import RunManager
+from scaling_llms.utils.checkpoint import CheckpointManager
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
     compute_grad_zero_frac,
@@ -344,6 +344,7 @@ class Trainer:
             n_embd=self.model.cfg.n_embd,
             vocab_size=f"{self.model.cfg.vocab_size:,}",
             device=self.device,
+            device_name=self.cfg.device_name,
             precision=self.cfg.precision,
             num_steps=remaining_steps,
             accum_steps=self.cfg.accum_steps,
