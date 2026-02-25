@@ -25,6 +25,11 @@ def load_model_class(class_info: dict[str, str]) -> type:
     module = importlib.import_module(class_info[MODEL_CLASS_INFO_KEYS.model_module])
     return getattr(module, class_info[MODEL_CLASS_INFO_KEYS.model_class_name])
 
+def load_config_class(class_info: dict[str, str]) -> type:
+    """Dynamically import and return the config class."""
+    module = importlib.import_module(class_info[MODEL_CLASS_INFO_KEYS.config_module])
+    return getattr(module, class_info[MODEL_CLASS_INFO_KEYS.config_class_name])
+
 
 def instantiate_model_from_run(run: RunManager) -> torch.nn.Module:
     """Instantiate the model (and its config) described in the run metadata.
@@ -36,17 +41,9 @@ def instantiate_model_from_run(run: RunManager) -> torch.nn.Module:
     model_class_path = run.get_metadata_path(RUN_FILES.model_class)
     class_info = json.loads(model_class_path.read_text())
 
-    # Dynamically load the model class
-    ModelClass = load_model_class({
-        MODEL_CLASS_INFO_KEYS.model_module: class_info[MODEL_CLASS_INFO_KEYS.model_module],
-        MODEL_CLASS_INFO_KEYS.model_class_name: class_info[MODEL_CLASS_INFO_KEYS.model_class_name]
-    })
-    
-    # Dynamically load the config class
-    ConfigClass = load_model_class({
-        MODEL_CLASS_INFO_KEYS.config_module: class_info[MODEL_CLASS_INFO_KEYS.config_module],
-        MODEL_CLASS_INFO_KEYS.config_class_name: class_info[MODEL_CLASS_INFO_KEYS.config_class_name]
-    })
+    # Dynamically load the model and config class
+    ModelClass = load_model_class(class_info)
+    ConfigClass = load_config_class(class_info)
     
     # Load model config
     model_cfg_path = run.get_metadata_path(RUN_FILES.model_config)

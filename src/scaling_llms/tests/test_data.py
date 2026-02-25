@@ -19,6 +19,7 @@ def base_configs():
         train_split="train[:1000]",
         eval_split="test[:1000]",
         start_sample_idx=0,
+        tokenizer_name="gpt2_tiktoken",
     )
 
 @pytest.fixture
