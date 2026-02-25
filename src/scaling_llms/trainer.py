@@ -1,17 +1,19 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import importlib
 import logging
 import math
 from pathlib import Path
 from typing import Any, Literal
 import torch
-import json
 
 from scaling_llms.constants import RUN_FILES, METRIC_CATS
 from scaling_llms.registries import RunManager
 from scaling_llms.utils.checkpoint import CheckpointManager
 from scaling_llms.utils.config import BaseJsonConfig
+from scaling_llms.utils.model_io import (
+    get_model_class_info, 
+    instantiate_model_from_run
+)
 from scaling_llms.utils.training import (
     compute_grad_zero_frac,
     compute_grad_norm,
@@ -24,27 +26,6 @@ from scaling_llms.utils.training import (
     make_trainer_logger,
     make_timer,
 )
-
-
-# -------------------------
-# HELPER FUNCTIONS
-# -------------------------
-def _get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
-    """Extract model class and config class info for serialization."""
-    model_class = type(model)
-    config_class = type(model.cfg)
-    return {
-        "model_module": model_class.__module__,
-        "model_class_name": model_class.__name__,
-        "config_module": config_class.__module__,
-        "config_class_name": config_class.__name__,
-    }
-
-
-def _load_model_class(class_info: dict[str, str]) -> type:
-    """Dynamically import and return the model class."""
-    module = importlib.import_module(class_info["module"])
-    return getattr(module, class_info["class_name"])
 
 
 # -------------------------
@@ -265,7 +246,7 @@ class Trainer:
         """Load trainer from checkpoint.
         
         Args:
-            run_path: Path to the run directory
+            run: RunManager instance
             ckpt_name: Name of checkpoint file (e.g., "latest.pt")
             model: Model instance. If None, will auto-instantiate from saved metadata.
             train_dl: Training dataloader
@@ -279,30 +260,7 @@ class Trainer:
         cfg = TrainerConfig.from_json(run.get_metadata_path(RUN_FILES.trainer_config))
         
         # Auto-instantiate model if not provided
-        if model is None:
-            
-            # Load model and config class info
-            model_class_path = run.get_metadata_path(RUN_FILES.model_class)
-            class_info = json.loads(model_class_path.read_text())
-
-            # Dynamically load the model class
-            ModelClass = _load_model_class({
-                "module": class_info["model_module"],
-                "class_name": class_info["model_class_name"]
-            })
-            
-            # Dynamically load the config class
-            ConfigClass = _load_model_class({
-                "module": class_info["config_module"],
-                "class_name": class_info["config_class_name"]
-            })
-            
-            # Load model config
-            model_cfg_path = run.get_metadata_path(RUN_FILES.model_config)
-            model_cfg = ConfigClass.from_json(model_cfg_path)
-            
-            # Instantiate model
-            model = ModelClass(model_cfg)
+        model = model or instantiate_model_from_run(run)
 
         # Init Trainer
         trainer = cls(cfg=cfg, model=model, train_dl=train_dl, eval_dl=eval_dl, run=run)
@@ -335,7 +293,7 @@ class Trainer:
         # Log model metadata on first run (step_idx == 0)
         if self.step_idx == 0 and self.run is not None:
             self.run.log_metadata(self.model.cfg, RUN_FILES.model_config, format="json")
-            self.run.log_metadata(_get_model_class_info(self.model), RUN_FILES.model_class, format="json")
+            self.run.log_metadata(get_model_class_info(self.model), RUN_FILES.model_class, format="json")
             self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
         
         self.logger.log_start(

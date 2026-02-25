@@ -46,12 +46,21 @@ class ExperimentRunner:
         trainer_kwargs: dict[str, Any],
         max_steps: int | None = None,
         overwrite: bool = False,
+        ignore_if_run_exists: bool = False,
     ) -> Trainer:
+        if ignore_if_run_exists and self.registry.run_exists(self.exp_name, self.run_name):
+            print(f"Run {self.exp_name}/{self.run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
+            return None  
+
+
         data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
         with self._managed_run(
-            self.exp_name, self.run_name, resume=False, overwrite=overwrite
+            self.exp_name, 
+            self.run_name, 
+            resume=False, 
+            overwrite=overwrite, 
         ) as run:
             trainer = self._init_trainer(
                 run=run,

@@ -459,6 +459,14 @@ class BaseRunRegistry:
 
         return self.artifacts_root / row[0]
 
+    def run_exists(self, experiment_name: str, run_name: str) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM runs WHERE experiment_name=? AND run_name=?",
+                (experiment_name, run_name),
+            ).fetchone()
+        return row is not None
+
     def start_run(
         self,
         experiment_name: str,
@@ -467,7 +475,7 @@ class BaseRunRegistry:
         overwrite: bool = False,
     ) -> RunManager:
         # Resume existing run if requested
-        if self._run_exists(experiment_name, run_name):
+        if self.run_exists(experiment_name, run_name):
             if resume:
                 return self.connect_run(experiment_name, run_name)
             if overwrite:
@@ -584,14 +592,6 @@ class BaseRunRegistry:
             """)
             con.commit()
 
-    def _run_exists(self, experiment_name: str, run_name: str) -> bool:
-        with self._connect() as con:
-            row = con.execute(
-                "SELECT 1 FROM runs WHERE experiment_name=? AND run_name=?",
-                (experiment_name, run_name),
-            ).fetchone()
-        return row is not None
-
     def _artifacts_path_exists(self, artifacts_path: str | Path) -> bool:
         artifacts_path = str(Path(artifacts_path).as_posix())
         with self._connect() as con:
@@ -609,7 +609,7 @@ class BaseRunRegistry:
         run_absolute_path: str | Path,
     ) -> None:
         # Validate run does not already exist (by name or path)
-        if self._run_exists(experiment_name, run_name):
+        if self.run_exists(experiment_name, run_name):
             raise ValueError(f"Run already exists: ({experiment_name}, {run_name}).")
         
         # Validate artifacts_path is unique (no other run has the same relative path)

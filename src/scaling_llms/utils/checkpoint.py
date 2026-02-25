@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import torch
 
+from scaling_llms.constants import CHECKPOINT_KEYS
 from scaling_llms.utils.loggers import BaseLogger
 
 
@@ -61,11 +62,11 @@ class CheckpointManager:
         self.logger.info(f"[save] Saving checkpoint at step {trainer_state['step_idx']} to {ckpt_path}")
 
         ckpt = {
-            "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
-            "scaler": self.scaler.state_dict() if (self.scaler is not None and self.scaler.is_enabled()) else None,
-            "lr_scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None,
-            "trainer": trainer_state,  # Trainer state dict
+            CHECKPOINT_KEYS.model: self.model.state_dict(),
+            CHECKPOINT_KEYS.optimizer: self.optimizer.state_dict() if self.optimizer is not None else None,
+            CHECKPOINT_KEYS.scaler: self.scaler.state_dict() if (self.scaler is not None and self.scaler.is_enabled()) else None,
+            CHECKPOINT_KEYS.lr_scheduler: self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None,
+            CHECKPOINT_KEYS.trainer_state: trainer_state,  # Trainer state dict
         }
         
         torch.save(ckpt, ckpt_path)
@@ -92,25 +93,24 @@ class CheckpointManager:
         
         # Load training objects
         self.logger.info("[load] Loading model state...")
-        self.model.load_state_dict(ckpt["model"], strict=strict)
+        self.model.load_state_dict(ckpt[CHECKPOINT_KEYS.model], strict=strict)
 
-        if (self.optimizer is not None) and (ckpt.get("optimizer") is not None):
+        if (self.optimizer is not None) and (ckpt.get(CHECKPOINT_KEYS.optimizer) is not None):
             self.logger.info("[load] Loading optimizer state...")
-            self.optimizer.load_state_dict(ckpt["optimizer"])
+            self.optimizer.load_state_dict(ckpt[CHECKPOINT_KEYS.optimizer])
         
-        if self.scaler and self.scaler.is_enabled() and (ckpt.get("scaler") is not None):
+        if self.scaler and self.scaler.is_enabled() and (ckpt.get(CHECKPOINT_KEYS.scaler) is not None):
             self.logger.info("[load] Loading scaler state...")
-            self.scaler.load_state_dict(ckpt["scaler"])
+            self.scaler.load_state_dict(ckpt[CHECKPOINT_KEYS.scaler])
         
-        if (self.lr_scheduler is not None) and (ckpt.get("lr_scheduler") is not None):
+        if (self.lr_scheduler is not None) and (ckpt.get(CHECKPOINT_KEYS.lr_scheduler) is not None):
             self.logger.info("[load] Loading lr_scheduler state...")
-            self.lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+            self.lr_scheduler.load_state_dict(ckpt[CHECKPOINT_KEYS.lr_scheduler])
         
         self.logger.info("[load] Returning trainer state...")
 
-        return ckpt["trainer"]
+        return ckpt[CHECKPOINT_KEYS.trainer_state]
         
-    
     def get_checkpoint_path(self, name: str) -> Path:
         """Get the full path to a checkpoint file."""
         return self.checkpoint_dir / name

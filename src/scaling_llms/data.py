@@ -103,15 +103,28 @@ def set_determinism(seed: int) -> None:
 
 
 # ============================================================
-# TOKENIZER (tiktoken preferred; fallback to HF GPT2)
+# TOKENIZER (tiktoken preferred)
 # ============================================================
-def make_gpt2_tokenizer():
-    enc = tiktoken.get_encoding("gpt2")
+def load_tokenizer(name: str):
+    
+    if name == "gpt2_tiktoken":
+        enc = tiktoken.get_encoding("gpt2")
+        def encode_fn(text: str) -> list[int]:
+            return enc.encode(text)
+        
+        def decode_fn(ids: list[int]) -> str:
+            return enc.decode(ids)
+        
+        return {
+            "encode": encode_fn,
+            "decode": decode_fn,
+            "eot_token": enc.eot_token,
+            "vocab_size": enc.n_vocab,
+            "raw": enc,
+        }
 
-    def encode_fn(text: str) -> list[int]:
-        return enc.encode(text)
-
-    return encode_fn, enc.eot_token, enc.n_vocab
+    else:
+        raise ValueError(f"Unsupported tokenizer library: {name}")
 
 
 # ============================================================
@@ -343,6 +356,9 @@ class DataConfig(BaseJsonConfig):
     eval_split: str | None = "test"
     dataset_config: str | None = None
 
+    # Tokenizer
+    tokenizer_name: str = "gpt2_tiktoken"
+
     seed: int = 1234
 
     def __post_init__(self):
@@ -399,7 +415,9 @@ def get_dataloaders(cfg: DataConfig, run=None, **gdrive_overrides) -> dict[str, 
 
     set_determinism(cfg.seed)
 
-    encode_fn, eos_id, vocab_size = make_gpt2_tokenizer()
+    # Load tokenizer
+    tokenizer = load_tokenizer(cfg.tokenizer_name)
+    encode_fn, eos_id, vocab_size = tokenizer["encode"], tokenizer["eot_token"], tokenizer["vocab_size"]
 
     # Use smallest unsigned dtype that can represent all token ids to save memory
     dtype = np.uint16 if vocab_size <= 65535 else np.uint32

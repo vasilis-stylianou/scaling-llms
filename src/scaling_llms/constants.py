@@ -78,7 +78,6 @@ class RunFileNames:
             self.last_ckpt,
         ]
 
-    
 
 @dataclass(frozen=True)
 class RunDirNames:
@@ -138,6 +137,26 @@ class GoogleDriveDefaults:
 
 
 # -------------------------
+# CHECKPOINT STATE KEYS & MODEL CLASS INFO KEYS
+# -------------------------
+@dataclass(frozen=True)
+class CheckpointStateKeys:
+    model: str = "model"
+    optimizer: str = "optimizer"
+    scaler: str = "scaler"
+    lr_scheduler: str = "lr_scheduler"
+    trainer_state: str = "trainer"
+
+
+@dataclass(frozen=True)
+class ModelClassInfoKeys:
+    model_module: str = "model_module"
+    model_class_name: str = "model_class_name"
+    config_module: str = "config_module"
+    config_class_name: str = "config_class_name"
+
+
+# -------------------------
 # INSTANTIATE SINGLETONS
 # -------------------------
 METRIC_SCHEMA = SchemaColumns()
@@ -146,3 +165,5 @@ RUN_FILES = RunFileNames()
 RUN_DIRS = RunDirNames()
 DATA_FILES = DataFileNames()
 GOOGLE_DRIVE_DEFAULTS = GoogleDriveDefaults()
+CHECKPOINT_KEYS = CheckpointStateKeys()
+MODEL_CLASS_INFO_KEYS = ModelClassInfoKeys()
