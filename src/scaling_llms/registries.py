@@ -537,6 +537,94 @@ class BaseRunRegistry:
             )
             con.commit()
 
+    def rename_run(
+        self,
+        experiment_name: str,
+        run_name: str,
+        new_experiment: str | None = None,
+        new_run_name: str | None = None,
+        move_artifacts: bool = False,
+        confirm: bool = True,
+    ) -> None:
+        """
+        Rename a run's logical name and/or move it to a different experiment.
+
+        Args:
+            experiment_name: current experiment name
+            run_name: current run name
+            new_experiment: target experiment name (if None, keeps current)
+            new_run_name: target run name (if None, keeps current)
+            move_artifacts: if True, physically move artifact directory when changing experiment
+            confirm: whether to prompt for confirmation
+
+        Notes:
+            - If changing the experiment name you must set `move_artifacts=True` to
+              move the files on disk; otherwise the DB would point to a non-existing path.
+        """
+        # Resolve new names
+        new_experiment = new_experiment or experiment_name
+        new_run_name = new_run_name or run_name
+
+        if (new_experiment == experiment_name) and (new_run_name == run_name):
+            return
+
+        # Prevent accidental overwrite
+        if self.run_exists(new_experiment, new_run_name):
+            raise FileExistsError(f"Target run already exists: ({new_experiment}, {new_run_name})")
+
+        # Confirmation
+        if confirm:
+            resp = input(
+                f"Rename run ({experiment_name}, {run_name}) -> ({new_experiment}, {new_run_name})? Type 'y' to confirm: "
+            )
+            if resp.strip().lower() not in ("y", "yes"):
+                print("Rename cancelled.")
+                return
+
+        # Fetch current artifacts_path and absolute path
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT artifacts_path, run_absolute_path FROM runs WHERE experiment_name=? AND run_name=?",
+                (experiment_name, run_name),
+            ).fetchone()
+
+        if row is None:
+            raise FileNotFoundError(f"Run not found: ({experiment_name}, {run_name})")
+
+        current_artifacts_path, current_abs_path = row[0], Path(row[1])
+
+        # If experiment is changing, require move_artifacts=True
+        if (new_experiment != experiment_name) and not move_artifacts:
+            raise ValueError(
+                "Changing the experiment requires move_artifacts=True to relocate artifacts on disk."
+            )
+
+        new_artifacts_path = current_artifacts_path
+        new_abs_path = current_abs_path
+
+        # Move artifacts on disk if requested
+        if move_artifacts:
+            src = current_abs_path
+            dst_exp_dir = (self.artifacts_root / new_experiment)
+            dst_exp_dir.mkdir(parents=True, exist_ok=True)
+
+            dst = dst_exp_dir / src.name
+            if dst.exists():
+                raise FileExistsError(f"Destination path already exists: {dst}")
+
+            shutil.move(str(src), str(dst))
+
+            new_abs_path = dst
+            new_artifacts_path = str(dst.relative_to(self.artifacts_root).as_posix())
+
+        # Update DB row
+        with self._connect() as con:
+            con.execute(
+                "UPDATE runs SET experiment_name=?, run_name=?, artifacts_path=?, run_absolute_path=? WHERE experiment_name=? AND run_name=?",
+                (new_experiment, new_run_name, new_artifacts_path, str(new_abs_path), experiment_name, run_name),
+            )
+            con.commit()
+
     def delete_experiment(
         self,
         experiment_name: str,

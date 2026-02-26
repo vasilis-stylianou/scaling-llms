@@ -241,7 +241,7 @@ class Trainer:
         train_dl=None,
         eval_dl=None,
         reset_state=False,
-        strict: bool = True
+        strict: bool = True,
     ) -> "Trainer":
         """Load trainer from checkpoint.
         
@@ -267,7 +267,7 @@ class Trainer:
 
         # Configure Trainer's state
         ckpt_path = run.get_checkpoint_path(ckpt_name)
-        trainer_state = trainer.ckpt_manager.load(ckpt_path, strict=strict)
+        trainer_state = trainer.ckpt_manager.load(ckpt_path, strict=strict, device=cfg.device)
         trainer.load_state_dict(trainer_state)
         
         if reset_state:
