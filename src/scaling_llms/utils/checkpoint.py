@@ -82,6 +82,7 @@ class CheckpointManager:
         ckpt_path: str | Path,
         device: str | torch.device | None = None,
         strict: bool = True,
+        weights_only: bool = False,
     ) -> dict[str, Any]:
         """
         Load checkpoint and restore model/optimizer/scaler/scheduler in-place,
@@ -103,7 +104,11 @@ class CheckpointManager:
         if device is not None:
             self.logger.info(f"[load_into] Moving model to {device} ...")
             self.model.to(device)
-
+        
+        if weights_only:
+            self.logger.info("[load] weights_only=True: skipping optimizer/scaler/scheduler and trainer_state.")
+            return {}
+    
         # 3) Optimizer
         if self.optimizer is not None and ckpt.get(CHECKPOINT_KEYS.optimizer) is not None:
             self.logger.info("[load_into] Loading optimizer state...")

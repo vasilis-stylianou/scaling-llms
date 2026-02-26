@@ -224,12 +224,6 @@ class Trainer:
         self.best_eval_nll = float(state.get("best_eval_nll", float("inf")))
         self.best_step_idx = int(state.get("best_step_idx", -1))
 
-    def reset_state(self) -> None:
-        """Reset trainer state to initial values."""
-        self.step_idx = 0
-        self.tokens_seen_total = 0
-        self.best_eval_nll = float("inf")
-        self.best_step_idx = -1
 
     # --- FACTORIES --- 
     @classmethod
@@ -252,6 +246,10 @@ class Trainer:
             train_dl: Training dataloader
             eval_dl: Evaluation dataloader  
             strict: Whether to strictly enforce state dict matching
+            reset_state: 
+                If True, only load model weights and ignore optimizer/scaler/scheduler 
+                and trainer state (e.g., step_idx). 
+                Useful for fine-tuning or transfer learning from a checkpoint.
             
         Returns:
             Trainer instance restored from checkpoint
@@ -267,12 +265,15 @@ class Trainer:
 
         # Configure Trainer's state
         ckpt_path = run.get_checkpoint_path(ckpt_name)
-        trainer_state = trainer.ckpt_manager.load(ckpt_path, strict=strict, device=cfg.device)
-        trainer.load_state_dict(trainer_state)
+        trainer_state = trainer.ckpt_manager.load(
+            ckpt_path, 
+            strict=strict, 
+            device=cfg.device, 
+            weights_only=reset_state # If True, skip loading optimizer/scaler/scheduler
+        )
         
-        if reset_state:
-            trainer.logger.log_checkpoint("Resetting trainer state.")
-            trainer.reset_state()
+        if not reset_state:
+            trainer.load_state_dict(trainer_state)
 
         return trainer
 

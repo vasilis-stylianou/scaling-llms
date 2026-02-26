@@ -123,8 +123,9 @@ class ExperimentRunner:
                 # Validate sequence length matches between old and new runs
                 old_data_kwargs = json.loads(
                     old_run.get_metadata_path(RUN_FILES.data_config).read_text()
-                )  # Ensure data config is present in old run metadata
-                print(old_data_kwargs)
+                )  
+                
+                # Ensure data config is present in old run metadata
                 if old_data_kwargs["seq_len"] != data_kwargs["seq_len"]:
                     self.delete_run(
                         confirm=False
@@ -153,7 +154,7 @@ class ExperimentRunner:
                     ckpt_name=ckpt_filename,
                     train_dl=dl_dict["train"],
                     eval_dl=dl_dict["eval"],
-                    reset_state=True,  # Reset state (e.g. step_idx) since this is a new run
+                    reset_state=True,  # Reset state (e.g. optimizer, lr scheduler,step_idx)
                 )
 
             trainer.attach_run(new_run)
@@ -231,4 +232,5 @@ class ExperimentRunner:
             ckpt_name=ckpt_filename,
             train_dl=dl_dict["train"],
             eval_dl=dl_dict["eval"],
+            reset_state=False,  # Load full trainer state by default when resuming
         )
