@@ -219,6 +219,8 @@ class TrainerLogger(BaseLogger):
         accum_steps: int,
         lr: float,
         step_idx: int,
+        warmup_steps: int,
+        lr_schedule: str
     ) -> None:
         if step_idx == 0:
             self.info("Starting Training")
@@ -234,8 +236,8 @@ class TrainerLogger(BaseLogger):
             device, device_name, precision
         )
         self.info(
-            "[optimization] num_steps=%d | accum_steps=%d | lr=%.3e",
-            num_steps, accum_steps, lr,
+            "[optimization] num_steps=%d | accum_steps=%d | lr=%.3e | warmup_steps=%d | lr_schedule=%s",
+            num_steps, accum_steps, lr, warmup_steps, lr_schedule
         )
 
     # High-frequency per-step logs should be DEBUG by default.

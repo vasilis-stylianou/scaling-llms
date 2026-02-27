@@ -169,11 +169,7 @@ class Trainer:
         self.run = run
 
         # Configure training data iterator
-        self.train_iter = (
-            make_train_iterator(train_dl, cfg.iter_mode) 
-            if train_dl is not None 
-            else None
-        )
+        self.train_iter = self._init_train_iter(train_dl, cfg.iter_mode)
 
         # Configure training objects
         self.scaler = torch.cuda.amp.GradScaler(
@@ -308,7 +304,9 @@ class Trainer:
             num_steps=remaining_steps,
             accum_steps=self.cfg.accum_steps,
             lr=self.cfg.lr,
-            step_idx=self.step_idx
+            step_idx=self.step_idx,
+            warmup_steps=self.cfg.warmup_steps,
+            lr_schedule=self.cfg.lr_schedule or "none"
         )
 
         # MAIN TRAINING LOOP
@@ -335,6 +333,7 @@ class Trainer:
                     tokens_seen_total=train_metrics["tokens_seen_total"],
                     tokens_per_sec=train_metrics["tokens_per_sec"],
                     step_ms=train_metrics["step_ms"],
+                    lr=train_metrics["lr"],
                     level=logging.INFO
                 )
                 self.logger.log_eval_step(
@@ -361,7 +360,8 @@ class Trainer:
                 (self.step_idx > 0) and  # Avoid saving checkpoint at step_idx=0
                 (self.step_idx % self.cfg.ckpt_log_freq == 0)
             ):
-                self.save_checkpoint(RUN_FILES.last_ckpt)
+                ckpt_name = f"step_{self.step_idx}.pt"
+                self.save_checkpoint(ckpt_name)
                     
             # Update LR
             if self.lr_scheduler is not None:
@@ -371,10 +371,6 @@ class Trainer:
             self.step_idx += 1
 
         # POST-TRAINING LOGGING
-        last_step = self.step_idx - 1  # last completed step index after training loop        
-        if last_step <= 0:
-            return # No training steps were taken, so nothing to log
-
         # Always save a final checkpoint at the end of training if checkpointing is enabled
         if (self.ckpt_manager is not None) and (self.cfg.ckpt_log_freq > 0):
             self.save_checkpoint(RUN_FILES.last_ckpt)
@@ -418,6 +414,12 @@ class Trainer:
         self.run = run
         self.logger = make_trainer_logger(run)
         self.ckpt_manager = self._create_ckpt_manager() 
+
+    def attach_dataloaders(self, train_dl=None, eval_dl=None, iter_mode=None) -> None:
+        self.train_dl = train_dl
+        self.eval_dl = eval_dl
+        iter_mode = iter_mode or self.cfg.iter_mode
+        self.train_iter = self._init_train_iter(train_dl, iter_mode)
 
     # --- TRAINING CORE ---
     def train_micro_step(self, idx, targets) -> torch.Tensor:
@@ -592,3 +594,8 @@ class Trainer:
             self.scaler,
             self.lr_scheduler,
         )
+    
+    def _init_train_iter(self, train_dl, iter_mode):
+        if train_dl is None:
+            return None
+        return make_train_iterator(train_dl, iter_mode)

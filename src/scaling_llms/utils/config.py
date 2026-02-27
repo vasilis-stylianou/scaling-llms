@@ -11,12 +11,16 @@ class BaseJsonConfig:
         return self._to_json(self)
 
     @classmethod
-    def from_json(cls, path: str | Path):
+    def from_json(cls, path: str | Path, overwrite_data: dict[str, Any] | None = None) -> BaseJsonConfig:
         path = Path(path)
         with path.open("r") as f:
             data = json.load(f)
 
         data = cls._postprocess_loaded_data(data)
+
+        if overwrite_data is not None:
+            data.update(overwrite_data)
+
         return cls(**data)
     
     @classmethod
@@ -48,6 +52,8 @@ class BaseJsonConfig:
 
     @classmethod
     def _postprocess_loaded_data(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        [Optional] To be implemented in subclasses for custom post-processing
+        of loaded JSON data before initializing the dataclass.
+        """
         return data
-
-    

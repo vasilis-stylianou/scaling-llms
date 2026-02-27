@@ -225,12 +225,23 @@ class ExperimentRunner:
         )
 
     def _trainer_from_checkpoint(self, run: Any, ckpt_filename: str) -> Trainer:
-        data_cfg = DataConfig.from_json(run.get_metadata_path(RUN_FILES.data_config))
-        dl_dict = get_dataloaders(data_cfg, run, project_subdir=self.project_subdir)
-        return Trainer.from_checkpoint(
+        # Load trainer state from checkpoint
+        trainer = Trainer.from_checkpoint(
             run,
             ckpt_name=ckpt_filename,
-            train_dl=dl_dict["train"],
-            eval_dl=dl_dict["eval"],
             reset_state=False,  # Load full trainer state by default when resuming
         )
+
+        # Load dataloaders 
+        # NOTE: Offset train dataloader start index by trainer's current step to ensure correct resumption
+        data_cfg = DataConfig.from_json(
+            path=run.get_metadata_path(RUN_FILES.data_config),
+            overwrite_data={"start_sample_idx": trainer.step_idx}
+        )
+
+        dl_dict = get_dataloaders(data_cfg, run, project_subdir=self.project_subdir)
+
+        # Attach dataloaders to trainer
+        trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
+
+        return trainer
