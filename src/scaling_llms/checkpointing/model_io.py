@@ -3,9 +3,20 @@ import importlib
 import json
 from typing import Any, Tuple
 import torch
+from dataclasses import dataclass
 
-from scaling_llms.constants import RUN_FILES, CHECKPOINT_KEYS, MODEL_CLASS_INFO_KEYS
-from scaling_llms.registries import RunManager
+from scaling_llms.constants import RUN_FILES, CHECKPOINT_KEYS
+from scaling_llms.tracking.run import Run
+
+
+@dataclass(frozen=True)
+class ModelClassInfoKeys:
+    model_module: str = "model_module"
+    model_class_name: str = "model_class_name"
+    config_module: str = "config_module"
+    config_class_name: str = "config_class_name"
+
+MODEL_CLASS_INFO_KEYS = ModelClassInfoKeys()
 
 
 def get_model_class_info(model: torch.nn.Module) -> dict[str, str]:
@@ -31,14 +42,14 @@ def load_config_class(class_info: dict[str, str]) -> type:
     return getattr(module, class_info[MODEL_CLASS_INFO_KEYS.config_class_name])
 
 
-def instantiate_model_from_run(run: RunManager) -> torch.nn.Module:
+def instantiate_model_from_run(run: Run) -> torch.nn.Module:
     """Instantiate the model (and its config) described in the run metadata.
 
     Returns a freshly constructed model (weights not loaded).
     """
 
     # Load model and config class info
-    model_class_path = run.get_metadata_path(RUN_FILES.model_class)
+    model_class_path = run.artifacts.metadata_path(RUN_FILES.model_class)
     class_info = json.loads(model_class_path.read_text())
 
     # Dynamically load the model and config class
@@ -46,7 +57,7 @@ def instantiate_model_from_run(run: RunManager) -> torch.nn.Module:
     ConfigClass = load_config_class(class_info)
     
     # Load model config
-    model_cfg_path = run.get_metadata_path(RUN_FILES.model_config)
+    model_cfg_path = run.artifacts.metadata_path(RUN_FILES.model_config)
     model_cfg = ConfigClass.from_json(model_cfg_path)
     
     # Instantiate model
@@ -56,7 +67,7 @@ def instantiate_model_from_run(run: RunManager) -> torch.nn.Module:
 
 
 def load_model_from_checkpoint(
-    run: RunManager,
+    run: Run,
     ckpt_name: str,
     map_location: str | None = None,
     strict: bool = True,
@@ -69,7 +80,7 @@ def load_model_from_checkpoint(
     model = instantiate_model_from_run(run)
 
     # Load checkpoint state into model
-    ckpt_path = run.get_checkpoint_path(ckpt_name)
+    ckpt_path = run.artifacts.checkpoint_path(ckpt_name)
     ckpt = torch.load(ckpt_path, map_location=map_location)
 
     if ckpt.get(CHECKPOINT_KEYS.model) is None:

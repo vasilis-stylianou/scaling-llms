@@ -7,7 +7,17 @@ from pathlib import Path
 from torch.utils.tensorboard.writer import SummaryWriter
 from typing import Any
 
-from scaling_llms.constants import METRIC_SCHEMA
+
+# -------------------------
+# METRIC TRACKING SCHEMA
+# -------------------------
+@dataclass(frozen=True)
+class SchemaColumns:
+    step: str = "step"
+    metric: str = "metric"
+    value: str = "value"
+
+METRIC_SCHEMA = SchemaColumns()
 
 
 # -------------------------

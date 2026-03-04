@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 from scaling_llms.constants import RUN_FILES
-from scaling_llms.registries import RunManager
+from scaling_llms.tracking.run import Run
 from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.timer import DeviceTimer
 
@@ -187,10 +187,10 @@ def compute_opt_steps_from_token_budget(
 # -----------------------------
 # LOGGING
 # -----------------------------
-def make_trainer_logger(run: RunManager | None) -> TrainerLogger:
+def make_trainer_logger(run: Run | None) -> TrainerLogger:
     logger = TrainerLogger(
         name="Trainer",  # avoid collisions across runs
-        log_dir=run.get_metadata_dir() if run is not None else None,  # writes metadata/train.log
+        log_dir=run.metadata_dir if run is not None else None,  # writes metadata/train.log
         file_name=str(RUN_FILES.train_log) if run is not None else None,
         level=logging.DEBUG, # global logger threshold (allow DEBUG messages through)
         propagate=False, # do NOT propagate to root

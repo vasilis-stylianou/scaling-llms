@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
-from typing import Any, Iterator
+from typing import Any
 
 from scaling_llms.constants import (
     PROJECT_NAME,
@@ -13,7 +12,10 @@ from scaling_llms.constants import (
 )
 from scaling_llms.data import DataConfig, get_dataloaders
 from scaling_llms.models import GPTConfig, GPTModel
-from scaling_llms.registries import GoogleDriveRunRegistry
+from scaling_llms.storage.google_drive import (
+    make_gdrive_data_registry,
+    make_gdrive_run_registry,
+)
 from scaling_llms.trainer import Trainer, TrainerConfig
 
 
@@ -36,7 +38,8 @@ class ExperimentRunner:
         self.is_dev = is_dev
         self.project_subdir = PROJECT_DEV_NAME if self.is_dev else PROJECT_NAME
         self.local_data_dir = LOCAL_DEV_DATA_DIR if self.is_dev else LOCAL_DATA_DIR
-        self.registry = GoogleDriveRunRegistry(project_subdir=self.project_subdir)
+        self.run_registry = make_gdrive_run_registry(project_subdir=self.project_subdir)
+        self.data_registry = make_gdrive_data_registry(project_subdir=self.project_subdir)
 
     # --- API ---
     def start(
@@ -48,7 +51,7 @@ class ExperimentRunner:
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
     ) -> Trainer:
-        if ignore_if_run_exists and self.registry.run_exists(self.exp_name, self.run_name):
+        if ignore_if_run_exists and self.run_registry.run_exists(self.exp_name, self.run_name):
             print(f"Run {self.exp_name}/{self.run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
             return None  
 
@@ -56,7 +59,7 @@ class ExperimentRunner:
         data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
-        with self._managed_run(
+        with self.run_registry.managed_run(
             self.exp_name, 
             self.run_name, 
             resume=False, 
@@ -76,7 +79,7 @@ class ExperimentRunner:
         ckpt_filename: str = RUN_FILES.best_ckpt,
         max_steps: int | None = None,
     ) -> Trainer:
-        with self._managed_run(
+        with self.run_registry.managed_run(
             self.exp_name, self.run_name, resume=True, overwrite=False
         ) as run:
             trainer = self._trainer_from_checkpoint(
@@ -93,7 +96,7 @@ class ExperimentRunner:
         ckpt_filename: str,
         max_steps: int | None = None,
     ) -> Trainer:
-        with self._managed_run(
+        with self.run_registry.managed_run(
             self.exp_name, self.run_name, resume=False, overwrite=False
         ) as new_run:
             new_run.log_metadata(
@@ -110,11 +113,11 @@ class ExperimentRunner:
             data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
             new_run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")
             dl_dict = get_dataloaders(
-                data_cfg, new_run, project_subdir=self.project_subdir
+                cfg=data_cfg, data_registry=self.data_registry, run=new_run
             )
 
             # Open old run just long enough to load ckpt into a Trainer object
-            with self._managed_run(
+            with self.run_registry.managed_run(
                 ckpt_exp_name,
                 ckpt_run_name,
                 resume=True,
@@ -122,7 +125,7 @@ class ExperimentRunner:
             ) as old_run:
                 # Validate sequence length matches between old and new runs
                 old_data_kwargs = json.loads(
-                    old_run.get_metadata_path(RUN_FILES.data_config).read_text()
+                    old_run.artifacts.metadata_path(RUN_FILES.data_config).read_text()
                 )  
                 
                 # Ensure data config is present in old run metadata
@@ -137,7 +140,7 @@ class ExperimentRunner:
 
                 # Validate vocab size matches between old and new runs
                 old_model_kwargs = json.loads(
-                    old_run.get_metadata_path(RUN_FILES.model_config).read_text()
+                    old_run.artifacts.metadata_path(RUN_FILES.model_config).read_text()
                 )
                 if old_model_kwargs["vocab_size"] != dl_dict["info"]["vocab_size"]:
                     self.delete_run(
@@ -163,31 +166,12 @@ class ExperimentRunner:
             return trainer
 
     def delete_experiment(self, confirm=True) -> None:
-        self.registry.delete_experiment(self.exp_name, confirm=confirm)
+        self.run_registry.delete_experiment(self.exp_name, confirm=confirm)
 
     def delete_run(self, confirm=True) -> None:
-        self.registry.delete_run(self.exp_name, self.run_name, confirm=confirm)
+        self.run_registry.delete_run(self.exp_name, self.run_name, confirm=confirm)
 
     # --- Internal methods ---
-    @contextmanager
-    def _managed_run(
-        self,
-        exp_name,
-        run_name,
-        resume: bool,
-        overwrite: bool,
-    ) -> Iterator[Any]:
-        run = self.registry.start_run(
-            experiment_name=exp_name,
-            run_name=run_name,
-            resume=resume,
-            overwrite=overwrite,
-        )
-        try:
-            yield run
-        finally:
-            run.close()
-
     def _build_model(
         self, data_cfg: DataConfig, vocab_size: int, gpt_hparams: dict[str, Any]
     ) -> GPTModel:
@@ -206,8 +190,9 @@ class ExperimentRunner:
         trainer_cfg: TrainerConfig,
         gpt_hparams: dict[str, Any],
     ) -> Trainer:
-        dl_dict = get_dataloaders(data_cfg, run, project_subdir=self.project_subdir)
-
+        dl_dict = get_dataloaders(
+            cfg=data_cfg, data_registry=self.data_registry, run=run
+        )
         run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")
 
         model = self._build_model(
@@ -235,11 +220,13 @@ class ExperimentRunner:
         # Load dataloaders 
         # NOTE: Offset train dataloader start index by trainer's current step to ensure correct resumption
         data_cfg = DataConfig.from_json(
-            path=run.get_metadata_path(RUN_FILES.data_config),
+            path=run.artifacts.metadata_path(RUN_FILES.data_config),
             overwrite_data={"start_sample_idx": trainer.step_idx}
         )
 
-        dl_dict = get_dataloaders(data_cfg, run, project_subdir=self.project_subdir)
+        dl_dict = get_dataloaders(
+            cfg=data_cfg, data_registry=self.data_registry, run=run
+        )
 
         # Attach dataloaders to trainer
         trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])

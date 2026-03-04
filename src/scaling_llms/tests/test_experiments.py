@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from scaling_llms.experiments import ExperimentRunner
@@ -25,16 +27,32 @@ def cleanup_experiments():
         pass  # If experiment doesn't exist, ignore the error
 
 
+# @pytest.fixture
+# def data_kwargs():
+#     return dict(
+#         dataset_name="wikitext",
+#         dataset_config="wikitext-103-v1",
+#         seq_len=16,
+#         train_batch_size=8,
+#         eval_batch_size=8,
+#         train_split="train[:1000]",
+#         eval_split="test[:1000]",
+#         start_sample_idx=0,
+#     )
+ 
 @pytest.fixture
-def data_kwargs():
+def data_kwargs(tmp_path: Path):
+    
     return dict(
-        dataset_name="wikitext",
-        dataset_config="wikitext-103-v1",
+        dataset_name="glue",
+        dataset_config="sst2",
+        train_split="train[:10%]",
+        eval_split="test[:10%]",
+        tokenizer_name="gpt2_tiktoken",
+        text_field="sentence",
         seq_len=16,
         train_batch_size=8,
         eval_batch_size=8,
-        train_split="train[:1000]",
-        eval_split="test[:1000]",
         start_sample_idx=0,
     )
 
@@ -80,23 +98,23 @@ def test_experiment_runner_start(data_kwargs, gpt_hparams, trainer_kwargs):
     for filename in RUN_FILES.as_list():
         # Metadata
         if filename.endswith(".json") or filename.endswith("log"):
-            file_path = run.get_metadata_path(filename)
+            file_path = run.artifacts.metadata_path(filename)
             assert file_path.exists(), f"Expected metadata file {filename} to be logged"
         
         # Checkpoints
         elif filename.endswith(".pt"):
-            file_path = run.get_checkpoint_path(filename)
+            file_path = run.artifacts.checkpoint_path(filename)
             assert file_path.exists(), f"Expected checkpoint file {filename} to be saved"
         else:
             raise ValueError(f"Unexpected file name {filename} in RUN_FILES")
 
     # Metrics
     for cat in METRIC_CATS.as_list():
-        metric_path = run.get_metric_path(cat)
+        metric_path = run.artifacts.metric_path(cat)
         assert metric_path.exists() and metric_path.is_file(), f"Expected metric file for category {cat} to be created"
 
     # TensorBoard logs
-    tb_dir = run.get_tb_dir()
+    tb_dir = run.tb_dir
     assert tb_dir.exists() and tb_dir.is_dir(), "TensorBoard log directory does not exist"
     assert any(tb_dir.iterdir()), "TensorBoard log directory is empty"
 

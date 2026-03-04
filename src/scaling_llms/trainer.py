@@ -6,14 +6,14 @@ from pathlib import Path
 from typing import Any, Literal
 import torch
 
-from scaling_llms.constants import RUN_FILES, METRIC_CATS
-from scaling_llms.registries import RunManager
-from scaling_llms.utils.checkpoint import CheckpointManager
-from scaling_llms.utils.config import BaseJsonConfig
-from scaling_llms.utils.model_io import (
+from scaling_llms.checkpointing.manager import CheckpointManager
+from scaling_llms.checkpointing.model_io import (
     get_model_class_info, 
     instantiate_model_from_run
 )
+from scaling_llms.constants import RUN_FILES, METRIC_CATS
+from scaling_llms.tracking.run import Run
+from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
     compute_grad_zero_frac,
     compute_grad_norm,
@@ -158,7 +158,7 @@ class Trainer:
         model: torch.nn.Module,
         train_dl=None,
         eval_dl=None,
-        run: RunManager | None = None,
+        run: Run | None = None,
     ):
         # Key Attributes
         self.cfg = cfg
@@ -225,7 +225,7 @@ class Trainer:
     @classmethod
     def from_checkpoint(
         cls,
-        run: RunManager,
+        run: Run,
         ckpt_name: str,
         model: torch.nn.Module | None = None,
         train_dl=None,
@@ -236,7 +236,7 @@ class Trainer:
         """Load trainer from checkpoint.
         
         Args:
-            run: RunManager instance
+            run: Run instance
             ckpt_name: Name of checkpoint file (e.g., "latest.pt")
             model: Model instance. If None, will auto-instantiate from saved metadata.
             train_dl: Training dataloader
@@ -251,7 +251,7 @@ class Trainer:
             Trainer instance restored from checkpoint
         """
         # Load trainer configs from metadata dir
-        cfg = TrainerConfig.from_json(run.get_metadata_path(RUN_FILES.trainer_config))
+        cfg = TrainerConfig.from_json(run.artifacts.metadata_path(RUN_FILES.trainer_config))
         
         # Auto-instantiate model if not provided
         model = model or instantiate_model_from_run(run)
@@ -260,7 +260,7 @@ class Trainer:
         trainer = cls(cfg=cfg, model=model, train_dl=train_dl, eval_dl=eval_dl, run=run)
 
         # Configure Trainer's state
-        ckpt_path = run.get_checkpoint_path(ckpt_name)
+        ckpt_path = run.artifacts.checkpoint_path(ckpt_name)
         trainer_state = trainer.ckpt_manager.load(
             ckpt_path, 
             strict=strict, 
@@ -410,7 +410,7 @@ class Trainer:
         
         return self.ckpt_manager.save(self.state_dict(), name)
 
-    def attach_run(self, run: RunManager) -> None:
+    def attach_run(self, run: Run) -> None:
         self.run = run
         self.logger = make_trainer_logger(run)
         self.ckpt_manager = self._create_ckpt_manager() 
@@ -588,7 +588,7 @@ class Trainer:
     
     def _create_ckpt_manager(self):
         return CheckpointManager(
-            self.run.get_checkpoint_dir(), 
+            self.run.checkpoints_dir, 
             self.model,
             self.optimizer,
             self.scaler,

@@ -159,11 +159,15 @@ class ModelClassInfoKeys:
 # -------------------------
 # INSTANTIATE SINGLETONS
 # -------------------------
-METRIC_SCHEMA = SchemaColumns()
-METRIC_CATS = MetricCategories()
+METRIC_CATS = MetricCategories() 
 RUN_FILES = RunFileNames()
-RUN_DIRS = RunDirNames()
 DATA_FILES = DataFileNames()
-GOOGLE_DRIVE_DEFAULTS = GoogleDriveDefaults()
 CHECKPOINT_KEYS = CheckpointStateKeys()
-MODEL_CLASS_INFO_KEYS = ModelClassInfoKeys()
+
+GOOGLE_DRIVE_DEFAULTS = GoogleDriveDefaults() # TO REMOVE
+RUN_DIRS = RunDirNames() # TO REMOVE
+METRIC_SCHEMA = SchemaColumns() # TO REMOVE
+MODEL_CLASS_INFO_KEYS = ModelClassInfoKeys() # TO REMOVE
+
+
+

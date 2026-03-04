@@ -1,5 +1,5 @@
+from dataclasses import fields
 import json
-import shutil
 import numpy as np
 import pytest
 import torch
@@ -7,19 +7,18 @@ from pathlib import Path
 
 from scaling_llms.constants import (
     DATA_FILES,
-    LOCAL_DEV_DATA_DIR,
     METRIC_CATS,
-    PROJECT_DEV_NAME,
-    RUN_DIRS,
     TOKENIZED_CACHE_DIR_NAME,
     METRIC_SCHEMA,
 )
 from scaling_llms.models import GPTConfig, GPTModel
-from scaling_llms.utils.checkpoint import CheckpointManager
-from scaling_llms.registries import (
-    GoogleDriveDataRegistry,
-    GoogleDriveRunRegistry,
-)
+from scaling_llms.registries.datasets.identity import DATASET_IDENTITY_COLS, DatasetIdentity
+from scaling_llms.registries.datasets.schema import DATASETS_TABLE
+from scaling_llms.registries.runs.registry import RunRegistry
+from scaling_llms.registries.datasets.registry import DataRegistry
+from scaling_llms.checkpointing.manager import CheckpointManager
+from scaling_llms.storage.base import RegistryStorage
+
 
 EXPERIMENT_NAME = "test_tracking"
 RUN_NAME = "run_test_tracking"
@@ -28,77 +27,99 @@ RUN_NAME = "run_test_tracking"
 # FIXTURES FOR REGISTRIES AND CHECKPOINT MANAGER TESTS
 # ============================================================
 @pytest.fixture
-def dev_run_registry():
-    return GoogleDriveRunRegistry(project_subdir=PROJECT_DEV_NAME)
+def storage(tmp_path: Path):
 
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    run_registry_root = project_root / "run_registry"
+    runs_artifacts_root = run_registry_root / "artifacts"
+    runs_db_path = run_registry_root / "runs.db"
+
+    data_registry_root = project_root / "data_registry"
+    datasets_db_path = data_registry_root / "datasets.db"
+    datasets_artifacts_root = data_registry_root / "tokenized_datasets"
+
+    storage = RegistryStorage(
+        project_root=project_root,
+        run_registry_root=run_registry_root,
+        runs_db_path=runs_db_path,
+        runs_artifacts_root=runs_artifacts_root,
+        data_registry_root=data_registry_root,
+        datasets_db_path=datasets_db_path,
+        datasets_artifacts_root=datasets_artifacts_root,
+    )
+    return storage
 
 @pytest.fixture
-def dev_data_registry():
-    return GoogleDriveDataRegistry(project_subdir=PROJECT_DEV_NAME)
-
+def run_registry(storage):
+    return RunRegistry.from_storage(storage)
 
 @pytest.fixture
-def local_dev_tokenized_cache_dir():
-    path = Path(LOCAL_DEV_DATA_DIR) / TOKENIZED_CACHE_DIR_NAME
+def data_registry(storage):
+    return DataRegistry.from_storage(storage)
+
+@pytest.fixture
+def local_tokenized_cache_dir(tmp_path: Path):
+    path = tmp_path / TOKENIZED_CACHE_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-@pytest.fixture(autouse=True)
-def clean_registries_and_cache(
-    dev_run_registry, dev_data_registry, local_dev_tokenized_cache_dir
-):
-    def _clean():
-        # Clean up datasets
-        df = dev_data_registry.get_datasets_as_df()
-        for _, row in df.iterrows():
-            dev_data_registry.delete_dataset(
-                dataset_path=row.dataset_path, confirm=False
-            )
-        for item in local_dev_tokenized_cache_dir.iterdir():
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                item.unlink(missing_ok=True)
+# @pytest.fixture(autouse=True)
+# def clean_registries_and_cache(
+#     run_registry, data_registry, local_tokenized_cache_dir
+# ):
+#     def _clean():
+#         # Clean up datasets
+#         df = data_registry.get_datasets_as_df()
+#         for _, row in df.iterrows():
+#             data_registry.delete_dataset(
+#                 dataset_path=row.dataset_path, confirm=False
+#             )
+#         for item in local_tokenized_cache_dir.iterdir():
+#             if item.is_dir():
+#                 shutil.rmtree(item, ignore_errors=True)
+#             else:
+#                 item.unlink(missing_ok=True)
 
-        # Clean up  experiments
-        df_runs = dev_run_registry.get_runs_as_df().query(f"experiment_name == '{EXPERIMENT_NAME}'")
-        for _, row in df_runs.iterrows():
-            dev_run_registry.delete_experiment(row.experiment_name, confirm=False)
+#         # Clean up  experiments
+#         df_runs = run_registry.get_runs_as_df().query(f"experiment_name == '{EXPERIMENT_NAME}'")
+#         for _, row in df_runs.iterrows():
+#             run_registry.delete_experiment(row.experiment_name, confirm=False)
 
-    # Clean up before each unit test
-    _clean()
+#     # Clean up before each unit test
+#     _clean()
 
-    yield
+#     yield
 
-    # Clean up after each unit test
-    _clean()
+#     # Clean up after each unit test
+#     _clean()
 
 
 # ============================================================
 # TESTS FOR RUN REGISTRY
 # ============================================================
-def test_run_registry_paths(dev_run_registry):
+def test_run_registry_paths(run_registry):
 
     # Check registry paths are correctly set up
-    assert dev_run_registry.registry_root.parent == dev_run_registry.project_root, (
+    assert run_registry.root.parent == run_registry.storage.project_root, (
         "Registry root should be a direct child of project root"
     )
-    assert dev_run_registry.db_path.parent == dev_run_registry.registry_root, (
+    assert run_registry.db_path.parent == run_registry.root, (
         "Database path should be inside registry root"
     )
-    assert dev_run_registry.artifacts_root.parent == dev_run_registry.registry_root, (
+    assert run_registry.artifacts_root.parent == run_registry.root, (
         "Artifacts root should be inside registry root"
     )
 
     # Create a run
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run = dev_run_registry.start_run(exp_name, run_name)
-    run.close()
+    run = run_registry.create_run(exp_name, run_name)
 
     # Check the run is registered correctly
-    df_runs =  dev_run_registry.get_runs_as_df().query(f"experiment_name == '{exp_name}'")
+    df_runs =  run_registry.get_runs_as_df().query(f"experiment_name == '{exp_name}'")
     row = df_runs.iloc[0]
     assert len(df_runs) == 1, f"Expected 1 run, found {len(df_runs)}"
     assert row.experiment_name == exp_name, (
@@ -107,12 +128,12 @@ def test_run_registry_paths(dev_run_registry):
     assert row.run_name == run_name, f"Expected run_name '{run_name}', got '{row.run_name}'"
 
     # Check the run paths are correct
-    exp_dir = dev_run_registry.get_experiment_dir(row.experiment_name)
-    run_dir = dev_run_registry.get_run_dir(row.experiment_name, row.run_name)
+    exp_dir = run_registry.get_experiment_dir(row.experiment_name)
+    run_dir = run_registry.get_run_dir(row.experiment_name, row.run_name)
     run_abs_path = Path(row.run_absolute_path)
 
-    assert run_abs_path == dev_run_registry.artifacts_root / row.artifacts_path, (
-        f"Run absolute path mismatch: {run_abs_path} != {dev_run_registry.artifacts_root / row.artifacts_path}"
+    assert run_abs_path == run_registry.artifacts_root / row.artifacts_path, (
+        f"Run absolute path mismatch: {run_abs_path} != {run_registry.artifacts_root / row.artifacts_path}"
     )
     assert run_abs_path.parent == exp_dir, (
         f"Run directory parent should be experiment directory: {run_abs_path.parent} != {exp_dir}"
@@ -120,50 +141,50 @@ def test_run_registry_paths(dev_run_registry):
     assert run_abs_path == run_dir, f"Run absolute path should match run_dir: {run_abs_path} != {run_dir}"
     assert run_abs_path == run.root, f"Run absolute path should match run.root: {run_abs_path} != {run.root}"
 
-    for subdir in RUN_DIRS.as_list():
-        subdir_path = run_dir / subdir
-        assert subdir_path.exists(), f"Run subdirectory {subdir} should exist"
-        assert subdir_path.is_dir(), f"Run subdirectory {subdir} should be a directory"
-        assert subdir_path == run[subdir], f"Run should be accessible via run[{subdir}]"
+    # Check the run subdirectories are correctly set up
+    for subdir_name in run.artifacts.list_subdir_names():
+        subdir_path = run_dir / subdir_name
+        attr_name = f"{subdir_name}_dir"
+        assert subdir_path.exists(), f"Run subdirectory {subdir_name} should exist"
+        assert subdir_path.is_dir(), f"Run subdirectory {subdir_name} should be a directory"
+        assert subdir_path == getattr(run, attr_name), f"Run subdirectory must be accessible by run.{attr_name}"
 
-def test_run_registry_delete(dev_run_registry):
+def test_run_registry_delete(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run = dev_run_registry.start_run(exp_name, run_name)
-    run.close()
+    _ = run_registry.create_run(exp_name, run_name)
 
     # Delete the run and check it's removed
-    dev_run_registry.delete_run(exp_name, run_name, confirm=False)
+    run_registry.delete_run(exp_name, run_name, confirm=False)
     with pytest.raises(FileNotFoundError):
-        dev_run_registry.get_run_dir(exp_name, run_name)
+        run_registry.get_run_dir(exp_name, run_name)
 
     # Delete the experiment and check it's removed
-    dev_run_registry.delete_experiment(exp_name, confirm=False)
+    run_registry.delete_experiment(exp_name, confirm=False)
     with pytest.raises(FileNotFoundError):
-        dev_run_registry.get_experiment_dir(exp_name)
+        run_registry.get_experiment_dir(exp_name)
 
 
-def test_run_registry_resume(dev_run_registry):
+def test_run_registry_resume(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run1 = dev_run_registry.start_run(exp_name, run_name)
-    run1.close()
+    run1 = run_registry.create_run(exp_name, run_name)
 
     with pytest.raises(ValueError):
-        dev_run_registry.start_run(exp_name, run_name, resume=False)
+        run_registry.create_run(exp_name, run_name, resume=False)
 
-    run2 = dev_run_registry.start_run(exp_name, run_name, resume=True)
-    run2.close()
+    run2 = run_registry.create_run(exp_name, run_name, resume=True)
 
     assert run1.root == run2.root, (
         "Resumed run should have the same root path as the original run"
     )
 
 
-def test_run_logging(dev_run_registry):
+def test_run_logging(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run = dev_run_registry.start_run(exp_name, run_name)
+    run = run_registry.create_run(exp_name, run_name)
+    run.start()
 
     # Log metrics
     metric_cat = METRIC_CATS.train
@@ -179,8 +200,8 @@ def test_run_logging(dev_run_registry):
     run.close()
 
     # Check paths exist
-    metrics_path = run[RUN_DIRS.metrics] / f"{metric_cat}.jsonl"
-    metadata_path = run[RUN_DIRS.metadata] / metadata_filename
+    metrics_path = run.metrics_dir / f"{metric_cat}.jsonl"
+    metadata_path = run.metadata_dir / metadata_filename
     assert metrics_path.exists(), "Metrics file should exist"
     assert metadata_path.exists(), "Metadata file should exist"
 
@@ -208,38 +229,52 @@ def test_run_logging(dev_run_registry):
 # ============================================================
 # TESTS FOR DATA REGISTRY
 # ============================================================
-def test_data_registry_paths(dev_data_registry):
+def test_dataset_identity_matches_unique_index():
+    ident_idx_spec = next(i for i in DATASETS_TABLE.indexes if i.name == "idx_datasets_identity")
 
-    assert dev_data_registry.registry_root.parent == dev_data_registry.project_root, (
+    assert ident_idx_spec.unique is True
+    assert tuple(ident_idx_spec.columns) == tuple(DATASET_IDENTITY_COLS)
+
+    ident_field_names = tuple(f.name for f in fields(DatasetIdentity))
+    assert ident_field_names == tuple(DATASET_IDENTITY_COLS)
+
+
+def test_data_registry_paths(data_registry):
+
+    assert data_registry.root.parent == data_registry.storage.project_root, (
         "Registry root should be a direct child of project root"
     )
-    assert dev_data_registry.db_path.parent == dev_data_registry.registry_root, (
+    assert data_registry.db_path.parent == data_registry.root, (
         "Database path should be inside registry root"
     )
-    assert dev_data_registry.datasets_root.parent == dev_data_registry.registry_root, (
-        "Datasets root should be inside registry root"
+    assert data_registry.artifacts_root.parent == data_registry.root, (
+        "Datasets artifacts root should be inside registry root"
     )
 
 
 def test_data_registry_register_find_copy_delete(
-    dev_data_registry, local_dev_tokenized_cache_dir
+    data_registry, 
+    local_tokenized_cache_dir
 ):
-    dataset_name = "dataset_test_1"
-    dataset_config = "dataset_config_1"
-    train_split = None
-    eval_split = None
+    # Create a dummy dataset identity and check that it's not found in the registry
+    ident = DatasetIdentity(
+        dataset_name="dataset_test_1",
+        dataset_config="dataset_config_1",
+        train_split="train",
+        eval_split="test",
+        tokenizer_name="tokenizer_test_1",
+        text_field="text",
+    )
+    dataset_key = ident.as_kwargs()
 
     with pytest.raises(FileNotFoundError):
-        dev_data_registry.find_dataset_path(
-            dataset_name=dataset_name,
-            dataset_config=dataset_config,
-            train_split=train_split,
-            eval_split=eval_split,
+        data_registry.find_dataset_path(
             raise_if_not_found=True,
+            **dataset_key
         )
 
     # Create dummy tokenized dataset files in the local tokenized cache dir
-    local_dataset_dir = local_dev_tokenized_cache_dir / "test"
+    local_dataset_dir = local_tokenized_cache_dir / "test"
     local_dataset_dir.mkdir(parents=True, exist_ok=True)
     local_train_mmap_path = local_dataset_dir / DATA_FILES.train_tokens
     local_eval_mmap_path = local_dataset_dir / DATA_FILES.eval_tokens
@@ -252,24 +287,16 @@ def test_data_registry_register_find_copy_delete(
     local_eval_mmap_path.write_bytes(eval_.tobytes())
 
     # Register the dataset
-    dataset_path = dev_data_registry.register_dataset(
+    dataset_path = data_registry.register_dataset(
         local_train_mmap_path,
         local_eval_mmap_path,
-        dataset_name,
-        dataset_config,
-        train_split,
-        eval_split,
+        **dataset_key
     )
 
     # Check the dataset is registered correctly
-    df_datasets = dev_data_registry.get_datasets_as_df()
+    df_datasets = data_registry.get_datasets_as_df()
     assert len(df_datasets) == 1, f"Expected 1 dataset, found {len(df_datasets)}"
-    found_path = dev_data_registry.find_dataset_path(
-        dataset_name,
-        dataset_config,
-        train_split,
-        eval_split,
-    )
+    found_path = data_registry.find_dataset_path(**dataset_key)
     assert dataset_path == found_path, (
         f"Registered dataset path mismatch: {dataset_path} != {found_path}"
     )
@@ -285,7 +312,7 @@ def test_data_registry_register_find_copy_delete(
     )
 
     # Copy the dataset to a local cache directory and check the files exist
-    dev_data_registry.copy_dataset_to_local(dataset_path, local_dataset_dir)
+    data_registry.copy_dataset_to_local(dataset_path, local_dataset_dir)
     assert local_train_mmap_path.exists(), (
         f"Train tokens file should exist after copy: {local_train_mmap_path}"
     )
@@ -294,8 +321,8 @@ def test_data_registry_register_find_copy_delete(
     )
 
     # Delete the dataset and check it's removed
-    dev_data_registry.delete_dataset(dataset_path, confirm=False)
-    df_datasets = dev_data_registry.get_datasets_as_df()
+    data_registry.delete_dataset(dataset_path, confirm=False)
+    df_datasets = data_registry.get_datasets_as_df()
     assert len(df_datasets) == 0, f"Expected 0 datasets after deletion, found {len(df_datasets)}"
     assert not dataset_path.exists(), f"Dataset path should not exist after deletion: {dataset_path}"
 
@@ -307,16 +334,15 @@ def _model_param_norm(model: GPTModel) -> torch.Tensor:
     return torch.sqrt(sum(p.float().norm() ** 2 for p in model.parameters()))
 
 
-def test_checkpoint_manager_save_load(dev_run_registry):
+def test_checkpoint_manager_save_load(run_registry):
     # Create a run to store checkpoints
-    run = dev_run_registry.start_run(EXPERIMENT_NAME, RUN_NAME, resume=False)
-    run.close()
+    run = run_registry.create_run(EXPERIMENT_NAME, RUN_NAME, resume=False)
 
     # Create a model and save a checkpoint
     torch.manual_seed(1)
     model1 = GPTModel(GPTConfig())
     ckpt_manager = CheckpointManager(
-        run[RUN_DIRS.checkpoints],
+        run.checkpoints_dir,
         model1,
         optimizer=None,
         scaler=None,
@@ -335,7 +361,7 @@ def test_checkpoint_manager_save_load(dev_run_registry):
     )
 
     # Load the checkpoint into the new model and check that the parameters now match
-    ckpt_manager = CheckpointManager(run[RUN_DIRS.checkpoints], model2)
+    ckpt_manager = CheckpointManager(run.checkpoints_dir, model2)
     loaded_trainer_state = ckpt_manager.load(ckpt_path)
 
     # Check that the trainer state is loaded correctly

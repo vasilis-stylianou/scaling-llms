@@ -5,9 +5,23 @@ import logging
 from pathlib import Path
 from typing import Any
 import torch
+from dataclasses import dataclass
 
-from scaling_llms.constants import CHECKPOINT_KEYS
 from scaling_llms.utils.loggers import BaseLogger
+
+
+# -------------------------
+# CHECKPOINT STATE KEYS & MODEL CLASS INFO KEYS
+# -------------------------
+@dataclass(frozen=True)
+class CheckpointStateKeys:
+    model: str = "model"
+    optimizer: str = "optimizer"
+    scaler: str = "scaler"
+    lr_scheduler: str = "lr_scheduler"
+    trainer_state: str = "trainer"
+
+CHECKPOINT_KEYS = CheckpointStateKeys()
 
 
 class CheckpointManager:
@@ -93,16 +107,16 @@ class CheckpointManager:
         """
         device = torch.device(device) if device is not None else self.device
 
-        self.logger.info(f"[load_into] Loading checkpoint from {ckpt_path}")
+        self.logger.info(f"[load] Loading checkpoint from {ckpt_path}")
         ckpt = torch.load(ckpt_path, map_location="cpu")  # always load safely on CPU
 
         # 1) Model weights
-        self.logger.info("[load_into] Loading model state...")
+        self.logger.info("[load] Loading model state...")
         self.model.load_state_dict(ckpt[CHECKPOINT_KEYS.model], strict=strict)
 
         # 2) Move model to device (before optimizer state fix)
         if device is not None:
-            self.logger.info(f"[load_into] Moving model to {device} ...")
+            self.logger.info(f"[load] Moving model to {device} ...")
             self.model.to(device)
         
         if weights_only:
@@ -111,12 +125,12 @@ class CheckpointManager:
     
         # 3) Optimizer
         if self.optimizer is not None and ckpt.get(CHECKPOINT_KEYS.optimizer) is not None:
-            self.logger.info("[load_into] Loading optimizer state...")
+            self.logger.info("[load] Loading optimizer state...")
             self.optimizer.load_state_dict(ckpt[CHECKPOINT_KEYS.optimizer])
 
             # Optimizer state tensors are often left on CPU after load_state_dict
             if device is not None:
-                self.logger.info("[load_into] Moving optimizer state to device...")
+                self.logger.info("[load] Moving optimizer state to device...")
                 self._ensure_optimizer_state_device(device)
 
         # 4) Scaler
@@ -125,7 +139,7 @@ class CheckpointManager:
             and getattr(self.scaler, "is_enabled", lambda: False)()
             and ckpt.get(CHECKPOINT_KEYS.scaler) is not None
         ):
-            self.logger.info("[load_into] Loading scaler state...")
+            self.logger.info("[load] Loading scaler state...")
             self.scaler.load_state_dict(ckpt[CHECKPOINT_KEYS.scaler])
             # GradScaler state is tiny; if it ever contains tensors, this is safe:
             if device is not None:
@@ -138,10 +152,10 @@ class CheckpointManager:
 
         # 5) LR scheduler
         if self.lr_scheduler is not None and ckpt.get(CHECKPOINT_KEYS.lr_scheduler) is not None:
-            self.logger.info("[load_into] Loading lr_scheduler state...")
+            self.logger.info("[load] Loading lr_scheduler state...")
             self.lr_scheduler.load_state_dict(ckpt[CHECKPOINT_KEYS.lr_scheduler])
 
-        self.logger.info("[load_into] Done. Returning trainer state.")
+        self.logger.info("[load] Done. Returning trainer state.")
         
         return ckpt[CHECKPOINT_KEYS.trainer_state]
     

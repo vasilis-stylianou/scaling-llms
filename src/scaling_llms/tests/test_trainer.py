@@ -1,12 +1,16 @@
+from pathlib import Path
+
 import pytest
 import torch
 from dataclasses import asdict
 from torch.utils.data import DataLoader, TensorDataset
 
-from scaling_llms.trainer import Trainer, TrainerConfig
+from scaling_llms.constants import RUN_FILES, METRIC_CATS
 from scaling_llms.models import GPTModel, GPTConfig
-from scaling_llms.registries import RunManager, log_as_json
-from scaling_llms.constants import RUN_DIRS, RUN_FILES, METRIC_CATS
+from scaling_llms.registries.runs.artifacts import RunArtifacts
+from scaling_llms.tracking.helpers import log_as_json
+from scaling_llms.tracking.run import Run
+from scaling_llms.trainer import Trainer, TrainerConfig
 
 
 VOCAB_SIZE = 100
@@ -75,9 +79,20 @@ def extended_trainer_config():
 
 
 @pytest.fixture
-def tmp_run(tmp_path):
-    """Create a temporary run directory for Trainer tests."""
-    return RunManager.create_new_run_dir(tmp_path / "runs")
+def tmp_run(tmp_path: Path):
+    run_root = tmp_path / "test_run"
+    run_artifacts = RunArtifacts(run_root)
+    run_artifacts.ensure_dirs(exist_ok=False)
+
+    run = Run(run_artifacts)
+    run.start(resume=False)
+    try:
+        yield run
+    finally:
+        try:
+            run.close()
+        except Exception:
+            pass
 
 
 @pytest.fixture
@@ -93,15 +108,14 @@ def trainer(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run):
 
 
 @pytest.fixture
-def extended_trainer(extended_trainer_config, dummy_model, dummy_dataloader, tmp_path):
+def extended_trainer(extended_trainer_config, dummy_model, dummy_dataloader, tmp_run):
     """Trainer with eval, checkpointing, and LR scheduling enabled."""
-    run = RunManager.create_new_run_dir(tmp_path / "runs")
     return Trainer(
         cfg=extended_trainer_config,
         model=dummy_model,
         train_dl=dummy_dataloader,
         eval_dl=dummy_dataloader,
-        run=run,
+        run=tmp_run,
     )
 
 
@@ -379,7 +393,7 @@ def test_trainer_eval_logging_creates_metrics(extended_trainer):
 
     trainer.train(max_steps=2)
 
-    eval_metrics_path = trainer.run[RUN_DIRS.metrics] / f"{METRIC_CATS.eval}.jsonl"
+    eval_metrics_path = trainer.run.metrics_dir / f"{METRIC_CATS.eval}.jsonl"
     assert eval_metrics_path.exists()
     assert eval_metrics_path.read_text().strip() != ""
 
@@ -389,8 +403,8 @@ def test_trainer_checkpointing_writes_files(extended_trainer):
 
     trainer.train(max_steps=2) # ckpt_log_freq = 1
 
-    last_ckpt = trainer.run[RUN_DIRS.checkpoints] / RUN_FILES.last_ckpt
-    best_ckpt = trainer.run[RUN_DIRS.checkpoints] / RUN_FILES.best_ckpt
+    last_ckpt = trainer.run.checkpoints_dir / RUN_FILES.last_ckpt
+    best_ckpt = trainer.run.checkpoints_dir / RUN_FILES.best_ckpt
     assert last_ckpt.exists()
     assert best_ckpt.exists()
 

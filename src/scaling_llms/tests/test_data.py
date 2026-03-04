@@ -1,59 +1,62 @@
 import pytest
-import shutil
 import torch
 from pathlib import Path
 
-from scaling_llms.constants import LOCAL_DEV_DATA_DIR, PROJECT_DEV_NAME
 from scaling_llms.data import DataConfig, get_dataloaders
-from scaling_llms.registries import GoogleDriveDataRegistry
+from scaling_llms.storage.base import RegistryStorage
+from scaling_llms.registries.datasets.registry import DataRegistry
 
 @pytest.fixture
-def base_configs():
+def base_configs(tmp_path: Path):
+    local_data_dir = tmp_path / "local_data"
+    local_data_dir.mkdir(parents=True, exist_ok=True)
+    
     return dict(
-        dataset_name="wikitext",
-        dataset_config="wikitext-103-v1",
-        seq_len=512,
+        # A small HF dataset
+        dataset_name="super_glue",
+        dataset_config="cb", 
+        train_split="train[:10%]",
+        eval_split="test[:10%]",
+        tokenizer_name="gpt2_tiktoken",
+        text_field="premise",
+        # Dataloader configs
+        seq_len=32,
         train_batch_size=8,
         eval_batch_size=8,
-        local_data_dir=LOCAL_DEV_DATA_DIR,
-        train_split="train[:1000]",
-        eval_split="test[:1000]",
+        local_data_dir=str(local_data_dir.resolve()),
         start_sample_idx=0,
-        tokenizer_name="gpt2_tiktoken",
     )
 
 @pytest.fixture
-def gdrive_overrides():
-    return dict(project_subdir=PROJECT_DEV_NAME)
+def data_registry(tmp_path: Path):
 
-@pytest.fixture
-def dev_data_registry():
-    return GoogleDriveDataRegistry(project_subdir=PROJECT_DEV_NAME)
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
 
-@pytest.fixture(autouse=True)
-def clean_data_registry_and_cache(dev_data_registry, base_configs):
-    def _clean():
-        df = dev_data_registry.get_datasets_as_df()
-        for _, row in df.iterrows():
-            dev_data_registry.delete_dataset(dataset_path=row.dataset_path, confirm=False)
-        for item in Path(base_configs["local_data_dir"]).iterdir():
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                item.unlink(missing_ok=True)
+    run_registry_root = project_root / "run_registry"
+    runs_artifacts_root = run_registry_root / "artifacts"
+    runs_db_path = run_registry_root / "runs.db"
 
-    # Clean up before each unit test
-    _clean()
+    data_registry_root = project_root / "data_registry"
+    datasets_db_path = data_registry_root / "datasets.db"
+    tokenized_datasets_root = data_registry_root / "tokenized_datasets"
 
-    yield
+    storage = RegistryStorage(
+        project_root=project_root,
+        run_registry_root=run_registry_root,
+        runs_db_path=runs_db_path,
+        runs_artifacts_root=runs_artifacts_root,
+        data_registry_root=data_registry_root,
+        datasets_db_path=datasets_db_path,
+        datasets_artifacts_root=tokenized_datasets_root,
+    )
 
-    # Clean up after each unit test
-    _clean()
+    return DataRegistry.from_storage(storage)
 
 
-def test_data_loaders(base_configs, gdrive_overrides):
+def test_data_loaders(base_configs, data_registry):
     cfg = DataConfig(**base_configs)
-    dl_dict = get_dataloaders(cfg, **gdrive_overrides)
+    dl_dict = get_dataloaders(cfg, data_registry)
     train_dl, eval_dl = dl_dict["train"], dl_dict["eval"]
 
     # Verify shapes
@@ -68,7 +71,7 @@ def test_data_loaders(base_configs, gdrive_overrides):
         assert tensor.shape == expected_shape, f"Expected {name} shape {expected_shape} but got {tensor.shape}"
 
 
-def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
+def test_dataloader_configs(base_configs, data_registry):
     """
     Dataloaders with the same HuggingFace dataset configs should reuse 
     the same local memmaps and not create new datasets in the Data Registry, 
@@ -79,11 +82,11 @@ def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
     """
 
     BASE_CONFIGS = base_configs
-    data_registry = dev_data_registry
+    data_registry = data_registry
 
     # Create dataloaders to populate Data Registry and local cache
     cfg = DataConfig(**BASE_CONFIGS)
-    _ = get_dataloaders(cfg, **gdrive_overrides)
+    _ = get_dataloaders(cfg, data_registry)
 
     # Check that memmaps exist locally after dataloader creation
     assert cfg.local_train_mmap_path.exists(), f"Expected local train memmap at {cfg.local_train_mmap_path} but it does not exist."
@@ -98,12 +101,12 @@ def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
     msg2diff_configs = {
         "same configs": {},
         "different batch size": dict(train_batch_size=16),
-        "different seq_len": dict(seq_len=256),
+        "different seq_len": dict(seq_len=16),
         "different start_sample_idx": dict(start_sample_idx=100),
     }
     for msg,diff_configs in msg2diff_configs.items():
         cfg = DataConfig(**{**BASE_CONFIGS, **diff_configs})
-        _ = get_dataloaders(cfg, **gdrive_overrides)
+        _ = get_dataloaders(cfg, data_registry)
         train_file_id_2 = cfg.local_train_mmap_path.stat().st_ino
         eval_file_id_2 = cfg.local_eval_mmap_path.stat().st_ino
 
@@ -112,7 +115,7 @@ def test_dataloader_configs(base_configs, gdrive_overrides, dev_data_registry):
         assert len(data_registry.get_datasets_as_df()) == 1, f"Expected only 1 dataset in Data Registry but found {len(data_registry.get_datasets_as_df())} after creating dataloaders with {msg}."
 
 
-def test_dataset_creation_configs(base_configs, gdrive_overrides, dev_data_registry):
+def test_dataset_creation_configs(base_configs, data_registry):
     """
     Dataloaders with different HuggingFace dataset configs should create new datasets in the Data Registry. 
     This tests verifies that the dataset creation mechanism in the Data Registry is working correctly 
@@ -120,12 +123,10 @@ def test_dataset_creation_configs(base_configs, gdrive_overrides, dev_data_regis
     """
 
     BASE_CONFIGS = base_configs
-    GDRIVE_OVERRIDES = gdrive_overrides
-    data_registry = dev_data_registry
 
     # Create dataloaders to populate Data Registry and local cache
     cfg = DataConfig(**BASE_CONFIGS)
-    _ = get_dataloaders(cfg, **GDRIVE_OVERRIDES)
+    _ = get_dataloaders(cfg, data_registry)
     
     # Check that memmaps exist locally after dataloader creation
     assert cfg.local_train_mmap_path.exists(), f"Expected local train memmap at {cfg.local_train_mmap_path} but it does not exist."
@@ -139,14 +140,14 @@ def test_dataset_creation_configs(base_configs, gdrive_overrides, dev_data_regis
     # Create dataloaders with various HuggingFace dataset config changes 
     # and check that new datasets are created in the Data Registry
     msg2diff_configs = {
-        "different train_split": dict(train_split="train[1000:2000]"),
-        "different eval_split": dict(eval_split="test[1000:2000]"),
-        "different dataset_config": dict(dataset_config="wikitext-2-v1"),
+        "different train_split": dict(train_split="train[10%:20%]"),
+        "different eval_split": dict(eval_split="test[10%:20%]"),
+        "different dataset_config": dict(dataset_config="copa"),
     }
     num_registered_datasets = len(data_registry.get_datasets_as_df())
     for msg,diff_configs in msg2diff_configs.items():
         cfg = DataConfig(**{**BASE_CONFIGS, **diff_configs})
-        _ = get_dataloaders(cfg, **GDRIVE_OVERRIDES)
+        _ = get_dataloaders(cfg, data_registry)
         train_file_id_2 = cfg.local_train_mmap_path.stat().st_ino
         eval_file_id_2 = cfg.local_eval_mmap_path.stat().st_ino
 
@@ -156,14 +157,13 @@ def test_dataset_creation_configs(base_configs, gdrive_overrides, dev_data_regis
         assert len(data_registry.get_datasets_as_df()) == num_registered_datasets, f"Expected a new dataset to be created in the Data Registry but it was not after creating dataloaders with {msg}."
 
     
-def test_dataset_offset(base_configs, gdrive_overrides, dev_data_registry):
+def test_dataset_offset(base_configs, data_registry):
 
     BASE_CONFIGS = base_configs
-    GDRIVE_OVERRIDES = gdrive_overrides
 
     # Create dataloaders with no offset
     cfg1 = DataConfig(**BASE_CONFIGS)
-    dl_dict = get_dataloaders(cfg1, **GDRIVE_OVERRIDES)
+    dl_dict = get_dataloaders(cfg1, data_registry)
     train_dl1, eval_dl1 = dl_dict["train"], dl_dict["eval"]
     train_iter = iter(train_dl1)
     train_batch_1 = next(train_iter)
@@ -172,7 +172,7 @@ def test_dataset_offset(base_configs, gdrive_overrides, dev_data_registry):
     
     # Create dataloaders with offset equal to 'train_batch_size' samples
     cfg2 = DataConfig(**{**BASE_CONFIGS, "start_sample_idx": BASE_CONFIGS["train_batch_size"]})
-    dl_dict = get_dataloaders(cfg2, **GDRIVE_OVERRIDES)
+    dl_dict = get_dataloaders(cfg2, data_registry)
     train_dl2, eval_dl2 = dl_dict["train"], dl_dict["eval"]
     xb_train_offset1, yb_train_offset1 = next(iter(train_dl2))
     xb_eval_offset1, yb_eval_offset1 = next(iter(eval_dl2))   
