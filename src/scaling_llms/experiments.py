@@ -34,9 +34,8 @@ class ExperimentRunner:
 
     """
 
-    def __init__(self, exp_name: str, run_name: str, is_dev: bool = True) -> None:
+    def __init__(self, exp_name: str, is_dev: bool = True) -> None:
         self.exp_name = exp_name
-        self.run_name = run_name
         self.is_dev = is_dev
         self.project_subdir = PROJECT_DEV_NAME if self.is_dev else PROJECT_NAME
         self.local_data_dir = LOCAL_DEV_DATA_DIR if self.is_dev else LOCAL_DATA_DIR
@@ -46,6 +45,7 @@ class ExperimentRunner:
     # --- API ---
     def start(
         self,
+        run_name: str,
         data_kwargs: dict[str, Any],
         gpt_hparams: dict[str, Any],
         trainer_kwargs: dict[str, Any],
@@ -53,8 +53,8 @@ class ExperimentRunner:
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
     ) -> Trainer:
-        if ignore_if_run_exists and self.run_registry.run_exists(RunIdentity(self.exp_name, self.run_name)):
-            print(f"Run {self.exp_name}/{self.run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
+        if ignore_if_run_exists and self.run_registry.run_exists(RunIdentity(self.exp_name, run_name)):
+            print(f"Run {self.exp_name}/{run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
             return None  
 
 
@@ -62,7 +62,7 @@ class ExperimentRunner:
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, self.run_name),
+            RunIdentity(self.exp_name, run_name),
             resume=False, 
             overwrite=overwrite, 
         ) as run:
@@ -77,11 +77,12 @@ class ExperimentRunner:
 
     def resume(
         self,
+        run_name: str,
         ckpt_filename: str = CKPT_FILES.best_ckpt,
         max_steps: int | None = None,
     ) -> Trainer:
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, self.run_name), resume=True, overwrite=False
+            RunIdentity(self.exp_name, run_name), resume=True, overwrite=False
         ) as run:
             trainer = self._trainer_from_checkpoint(
                 run=run, ckpt_filename=ckpt_filename
@@ -91,6 +92,7 @@ class ExperimentRunner:
 
     def start_from_checkpoint(
         self,
+        run_name: str,
         data_kwargs: dict[str, Any],
         ckpt_exp_name: str,
         ckpt_run_name: str,
@@ -98,7 +100,7 @@ class ExperimentRunner:
         max_steps: int | None = None,
     ) -> Trainer:
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, self.run_name), resume=False, overwrite=False
+            RunIdentity(self.exp_name, run_name), resume=False, overwrite=False
         ) as new_run:
             new_run.log_metadata(
                 {
@@ -131,6 +133,7 @@ class ExperimentRunner:
                 # Ensure data config is present in old run metadata
                 if old_data_kwargs["seq_len"] != data_kwargs["seq_len"]:
                     self.delete_run(
+                        run_name=run_name,
                         confirm=False
                     )  # Clean up new run since it won't be usable
                     raise ValueError(
@@ -144,6 +147,7 @@ class ExperimentRunner:
                 )
                 if old_model_kwargs["vocab_size"] != dl_dict["info"]["vocab_size"]:
                     self.delete_run(
+                        run_name=run_name,
                         confirm=False
                     )  # Clean up new run since it won't be usable
                     raise ValueError(
@@ -168,8 +172,8 @@ class ExperimentRunner:
     def delete_experiment(self, confirm=True) -> None:
         self.run_registry.delete_experiment(self.exp_name, confirm=confirm)
 
-    def delete_run(self, confirm=True) -> None:
-        self.run_registry.delete_run(RunIdentity(self.exp_name, self.run_name), confirm=confirm)
+    def delete_run(self, run_name: str, confirm=True) -> None:
+        self.run_registry.delete_run(RunIdentity(self.exp_name, run_name), confirm=confirm)
 
     # --- Internal methods ---
     def _build_model(

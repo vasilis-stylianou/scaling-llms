@@ -1,7 +1,10 @@
 import math
 import json
 import pandas as pd
-from scaling_llms.registries import GoogleDriveRunRegistry, RunManager
+from scaling_llms.registries.runs.identity import RunIdentity
+from scaling_llms.registries.runs.registry import RunRegistry
+from scaling_llms.storage.google_drive import make_gdrive_run_registry
+from scaling_llms.tracking.run import Run
 from scaling_llms.constants import (
     METRIC_CATS,
     METADATA_FILES,
@@ -11,7 +14,7 @@ from scaling_llms.constants import (
 from scaling_llms.tracking.trackers import JsonlTrackerReader, METRIC_SCHEMA
 
 
-def compute_expected_init_train_metrics(run: RunManager) -> dict[str, float]:
+def compute_expected_init_train_metrics(run: Run) -> dict[str, float]:
     model_config = json.loads(run.artifacts.metadata_path(METADATA_FILES.model_config).read_text())
     proba = 1 / model_config["vocab_size"]
     nll = -math.log(proba)
@@ -19,7 +22,7 @@ def compute_expected_init_train_metrics(run: RunManager) -> dict[str, float]:
     return {"nll": nll, "ppl": ppl}
 
 def validate_init_nll(
-    run_reg: GoogleDriveRunRegistry,
+    run_reg: RunRegistry,
     experiment_name: str, 
     metric_reader: "StepMetricsReader",
     rel_tol: float = 1e-2,
@@ -29,7 +32,7 @@ def validate_init_nll(
 
     for run_name in metric_reader.list_run_names():
         # Expected NLL: -log(1/vocab_size)
-        run = run_reg.start_run(experiment_name, run_name, resume=True)
+        run = run_reg.get_run(RunIdentity(experiment_name=experiment_name, run_name=run_name))
         init_metrics = compute_expected_init_train_metrics(run)
         expected_nll = init_metrics["nll"]
 
@@ -55,7 +58,7 @@ def validate_init_nll(
 class StepMetricsReader:
     def __init__(self, experiment_name: str, is_dev: bool = True):
         self.experiment_name = experiment_name
-        self.run_reg = GoogleDriveRunRegistry(project_subdir=PROJECT_DEV_NAME if is_dev else PROJECT_NAME)
+        self.run_reg = make_gdrive_run_registry(project_subdir=PROJECT_DEV_NAME if is_dev else PROJECT_NAME)
         self.run_name2jsonl_reader = self._get_run_name2jsonl_reader()
 
     # --- API ---

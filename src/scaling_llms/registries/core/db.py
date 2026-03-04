@@ -46,8 +46,10 @@ class RegistryDB:
         with self._connect() as con:
             df = pd.read_sql_query(qry, con, params=params)
 
-        if not df.empty and "created_at" in df.columns:
-            created_at = pd.to_datetime(df["created_at"], errors="coerce", utc=True)
-            df["created_at"] = created_at.dt.tz_convert(LOCAL_TIMEZONE)
+        if not df.empty:
+            for col in ["created_at", "updated_at"]:
+                if col in df.columns:
+                    dt_col = pd.to_datetime(df[col], errors="coerce", utc=True)
+                    df[col] = dt_col.dt.tz_convert(LOCAL_TIMEZONE)
 
         return df
