@@ -19,8 +19,8 @@ from scaling_llms.constants import (
     LOCAL_DATA_DIR,
     HF_CACHE_DIR_NAME,
     MAX_CACHE_GB,
+    METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
-    RUN_FILES
 )
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
@@ -426,7 +426,7 @@ def get_dataloaders(
 
     logger = DataLogger(
         name="DataLoader",
-        file_name=str(RUN_FILES.data_log) if run is not None else None,
+        file_name=str(METADATA_FILES.data_log) if run is not None else None,
         log_dir=run.metadata_dir if run is not None else None,  # writes metadata/train.log
         level=logging.INFO,
     )
@@ -449,14 +449,13 @@ def get_dataloaders(
         dtype=f"np.{np.dtype(dtype).name}", 
     )
 
-    # Get dataset identity and define unique key for Data Registry lookup
+    # Get dataset identity for Data Registry lookup
     ident = cfg.identity()
-    dataset_key = ident.as_kwargs()
     
     # SKIP Steps 1-2 if memmaps already exist in Data Registry
-    if data_registry.dataset_exists(**dataset_key):
+    if data_registry.dataset_exists(ident):
         logger.log_dataset_loading("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
-        registered_dataset_path = data_registry.find_dataset_path(**dataset_key, raise_if_not_found=True)
+        registered_dataset_path = data_registry.find_dataset_path(ident, raise_if_not_found=True)
     else:
         logger.log_dataset_loading("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
 
@@ -506,10 +505,10 @@ def get_dataloaders(
         registered_dataset_path = data_registry.register_dataset(
             src_path_train_bin=cfg.local_train_mmap_path,
             src_path_eval_bin=cfg.local_eval_mmap_path,
+            identity=ident,
             vocab_size=vocab_size,
             total_train_tokens=total_train_tokens,
             total_eval_tokens=total_eval_tokens,
-            **dataset_key
         )
 
     # --- STEP 3: Create token buffers for training and evaluation ---

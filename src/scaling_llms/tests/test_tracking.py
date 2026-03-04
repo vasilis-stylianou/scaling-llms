@@ -9,13 +9,14 @@ from scaling_llms.constants import (
     DATA_FILES,
     METRIC_CATS,
     TOKENIZED_CACHE_DIR_NAME,
-    METRIC_SCHEMA,
 )
 from scaling_llms.models import GPTConfig, GPTModel
 from scaling_llms.registries.datasets.identity import DATASET_IDENTITY_COLS, DatasetIdentity
 from scaling_llms.registries.datasets.schema import DATASETS_TABLE
 from scaling_llms.registries.runs.registry import RunRegistry
+from scaling_llms.registries.runs.identity import RunIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
+from scaling_llms.tracking.trackers import METRIC_SCHEMA
 from scaling_llms.checkpointing.manager import CheckpointManager
 from scaling_llms.storage.base import RegistryStorage
 
@@ -116,7 +117,7 @@ def test_run_registry_paths(run_registry):
     # Create a run
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run = run_registry.create_run(exp_name, run_name)
+    run = run_registry.create_run(RunIdentity(exp_name, run_name))
 
     # Check the run is registered correctly
     df_runs =  run_registry.get_runs_as_df().query(f"experiment_name == '{exp_name}'")
@@ -129,7 +130,7 @@ def test_run_registry_paths(run_registry):
 
     # Check the run paths are correct
     exp_dir = run_registry.get_experiment_dir(row.experiment_name)
-    run_dir = run_registry.get_run_dir(row.experiment_name, row.run_name)
+    run_dir = run_registry.get_run_dir(RunIdentity(row.experiment_name, row.run_name))
     run_abs_path = Path(row.run_absolute_path)
 
     assert run_abs_path == run_registry.artifacts_root / row.artifacts_path, (
@@ -152,12 +153,12 @@ def test_run_registry_paths(run_registry):
 def test_run_registry_delete(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    _ = run_registry.create_run(exp_name, run_name)
+    _ = run_registry.create_run(RunIdentity(exp_name, run_name))
 
     # Delete the run and check it's removed
-    run_registry.delete_run(exp_name, run_name, confirm=False)
+    run_registry.delete_run(RunIdentity(exp_name, run_name), confirm=False)
     with pytest.raises(FileNotFoundError):
-        run_registry.get_run_dir(exp_name, run_name)
+        run_registry.get_run_dir(RunIdentity(exp_name, run_name))
 
     # Delete the experiment and check it's removed
     run_registry.delete_experiment(exp_name, confirm=False)
@@ -168,12 +169,12 @@ def test_run_registry_delete(run_registry):
 def test_run_registry_resume(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run1 = run_registry.create_run(exp_name, run_name)
+    run1 = run_registry.create_run(RunIdentity(exp_name, run_name))
 
     with pytest.raises(ValueError):
-        run_registry.create_run(exp_name, run_name, resume=False)
+        run_registry.create_run(RunIdentity(exp_name, run_name), resume=False)
 
-    run2 = run_registry.create_run(exp_name, run_name, resume=True)
+    run2 = run_registry.create_run(RunIdentity(exp_name, run_name), resume=True)
 
     assert run1.root == run2.root, (
         "Resumed run should have the same root path as the original run"
@@ -183,7 +184,7 @@ def test_run_registry_resume(run_registry):
 def test_run_logging(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
-    run = run_registry.create_run(exp_name, run_name)
+    run = run_registry.create_run(RunIdentity(exp_name, run_name))
     run.start()
 
     # Log metrics
@@ -265,13 +266,9 @@ def test_data_registry_register_find_copy_delete(
         tokenizer_name="tokenizer_test_1",
         text_field="text",
     )
-    dataset_key = ident.as_kwargs()
 
     with pytest.raises(FileNotFoundError):
-        data_registry.find_dataset_path(
-            raise_if_not_found=True,
-            **dataset_key
-        )
+        data_registry.find_dataset_path(ident, raise_if_not_found=True)
 
     # Create dummy tokenized dataset files in the local tokenized cache dir
     local_dataset_dir = local_tokenized_cache_dir / "test"
@@ -290,13 +287,13 @@ def test_data_registry_register_find_copy_delete(
     dataset_path = data_registry.register_dataset(
         local_train_mmap_path,
         local_eval_mmap_path,
-        **dataset_key
+        ident,
     )
 
     # Check the dataset is registered correctly
     df_datasets = data_registry.get_datasets_as_df()
     assert len(df_datasets) == 1, f"Expected 1 dataset, found {len(df_datasets)}"
-    found_path = data_registry.find_dataset_path(**dataset_key)
+    found_path = data_registry.find_dataset_path(ident)
     assert dataset_path == found_path, (
         f"Registered dataset path mismatch: {dataset_path} != {found_path}"
     )
@@ -321,7 +318,7 @@ def test_data_registry_register_find_copy_delete(
     )
 
     # Delete the dataset and check it's removed
-    data_registry.delete_dataset(dataset_path, confirm=False)
+    data_registry.delete_dataset(dataset_path=dataset_path, confirm=False)
     df_datasets = data_registry.get_datasets_as_df()
     assert len(df_datasets) == 0, f"Expected 0 datasets after deletion, found {len(df_datasets)}"
     assert not dataset_path.exists(), f"Dataset path should not exist after deletion: {dataset_path}"
@@ -336,7 +333,7 @@ def _model_param_norm(model: GPTModel) -> torch.Tensor:
 
 def test_checkpoint_manager_save_load(run_registry):
     # Create a run to store checkpoints
-    run = run_registry.create_run(EXPERIMENT_NAME, RUN_NAME, resume=False)
+    run = run_registry.create_run(RunIdentity(EXPERIMENT_NAME, RUN_NAME), resume=False)
 
     # Create a model and save a checkpoint
     torch.manual_seed(1)

@@ -29,22 +29,22 @@ class RegistryDB:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self.db_path))
 
-    def execute(self, qry: str, params: tuple[Any, ...] = ()) -> None:
+    def execute(self, qry: str, params: dict[str, Any] | None = None) -> None:
         with self._connect() as con:
-            con.execute(qry, params)
+            con.execute(qry, params or {})
             con.commit()
 
-    def fetchone(self, qry: str, params: tuple[Any, ...] = ()) -> tuple[Any, ...] | None:
+    def fetchone(self, qry: str, params: dict[str, Any] | None = None) -> tuple[Any, ...] | None:
         with self._connect() as con:
-            return con.execute(qry, params).fetchone()
+            return con.execute(qry, params or {}).fetchone()
 
-    def fetchall(self, qry: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    def fetchall(self, qry: str, params: dict[str, Any] | None = None) -> list[tuple[Any, ...]]:
         with self._connect() as con:
-            return con.execute(qry, params).fetchall()
+            return con.execute(qry, params or {}).fetchall()
 
-    def read_sql_df(self, qry: str) -> pd.DataFrame:
+    def read_sql_df(self, qry: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
         with self._connect() as con:
-            df = pd.read_sql_query(qry, con)
+            df = pd.read_sql_query(qry, con, params=params)
 
         if not df.empty and "created_at" in df.columns:
             created_at = pd.to_datetime(df["created_at"], errors="coerce", utc=True)

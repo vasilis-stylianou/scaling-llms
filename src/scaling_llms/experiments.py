@@ -4,14 +4,16 @@ import json
 from typing import Any
 
 from scaling_llms.constants import (
-    PROJECT_NAME,
-    PROJECT_DEV_NAME,
-    RUN_FILES,
+    CKPT_FILES,
     LOCAL_DATA_DIR,
     LOCAL_DEV_DATA_DIR,
+    METADATA_FILES,
+    PROJECT_NAME,
+    PROJECT_DEV_NAME,
 )
 from scaling_llms.data import DataConfig, get_dataloaders
 from scaling_llms.models import GPTConfig, GPTModel
+from scaling_llms.registries.runs.identity import RunIdentity
 from scaling_llms.storage.google_drive import (
     make_gdrive_data_registry,
     make_gdrive_run_registry,
@@ -51,7 +53,7 @@ class ExperimentRunner:
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
     ) -> Trainer:
-        if ignore_if_run_exists and self.run_registry.run_exists(self.exp_name, self.run_name):
+        if ignore_if_run_exists and self.run_registry.run_exists(RunIdentity(self.exp_name, self.run_name)):
             print(f"Run {self.exp_name}/{self.run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
             return None  
 
@@ -60,8 +62,7 @@ class ExperimentRunner:
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
         with self.run_registry.managed_run(
-            self.exp_name, 
-            self.run_name, 
+            RunIdentity(self.exp_name, self.run_name),
             resume=False, 
             overwrite=overwrite, 
         ) as run:
@@ -76,11 +77,11 @@ class ExperimentRunner:
 
     def resume(
         self,
-        ckpt_filename: str = RUN_FILES.best_ckpt,
+        ckpt_filename: str = CKPT_FILES.best_ckpt,
         max_steps: int | None = None,
     ) -> Trainer:
         with self.run_registry.managed_run(
-            self.exp_name, self.run_name, resume=True, overwrite=False
+            RunIdentity(self.exp_name, self.run_name), resume=True, overwrite=False
         ) as run:
             trainer = self._trainer_from_checkpoint(
                 run=run, ckpt_filename=ckpt_filename
@@ -97,7 +98,7 @@ class ExperimentRunner:
         max_steps: int | None = None,
     ) -> Trainer:
         with self.run_registry.managed_run(
-            self.exp_name, self.run_name, resume=False, overwrite=False
+            RunIdentity(self.exp_name, self.run_name), resume=False, overwrite=False
         ) as new_run:
             new_run.log_metadata(
                 {
@@ -111,21 +112,20 @@ class ExperimentRunner:
                 format="json",
             )
             data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
-            new_run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")
+            new_run.log_metadata(data_cfg, METADATA_FILES.data_config, format="json")
             dl_dict = get_dataloaders(
                 cfg=data_cfg, data_registry=self.data_registry, run=new_run
             )
 
             # Open old run just long enough to load ckpt into a Trainer object
             with self.run_registry.managed_run(
-                ckpt_exp_name,
-                ckpt_run_name,
+                RunIdentity(ckpt_exp_name, ckpt_run_name),
                 resume=True,
                 overwrite=False,
             ) as old_run:
                 # Validate sequence length matches between old and new runs
                 old_data_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(RUN_FILES.data_config).read_text()
+                    old_run.artifacts.metadata_path(METADATA_FILES.data_config).read_text()
                 )  
                 
                 # Ensure data config is present in old run metadata
@@ -140,7 +140,7 @@ class ExperimentRunner:
 
                 # Validate vocab size matches between old and new runs
                 old_model_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(RUN_FILES.model_config).read_text()
+                    old_run.artifacts.metadata_path(METADATA_FILES.model_config).read_text()
                 )
                 if old_model_kwargs["vocab_size"] != dl_dict["info"]["vocab_size"]:
                     self.delete_run(
@@ -169,7 +169,7 @@ class ExperimentRunner:
         self.run_registry.delete_experiment(self.exp_name, confirm=confirm)
 
     def delete_run(self, confirm=True) -> None:
-        self.run_registry.delete_run(self.exp_name, self.run_name, confirm=confirm)
+        self.run_registry.delete_run(RunIdentity(self.exp_name, self.run_name), confirm=confirm)
 
     # --- Internal methods ---
     def _build_model(
@@ -193,7 +193,7 @@ class ExperimentRunner:
         dl_dict = get_dataloaders(
             cfg=data_cfg, data_registry=self.data_registry, run=run
         )
-        run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")
+        run.log_metadata(data_cfg, METADATA_FILES.data_config, format="json")
 
         model = self._build_model(
             data_cfg=data_cfg,
@@ -220,7 +220,7 @@ class ExperimentRunner:
         # Load dataloaders 
         # NOTE: Offset train dataloader start index by trainer's current step to ensure correct resumption
         data_cfg = DataConfig.from_json(
-            path=run.artifacts.metadata_path(RUN_FILES.data_config),
+            path=run.artifacts.metadata_path(METADATA_FILES.data_config),
             overwrite_data={"start_sample_idx": trainer.step_idx}
         )
 

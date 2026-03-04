@@ -8,6 +8,7 @@ import pandas as pd
 from scaling_llms.constants import DATA_FILES
 from scaling_llms.registries.core.db import RegistryDB
 from scaling_llms.registries.core.helpers import get_next_id, get_local_iso_timestamp
+from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.schema import TABLE_SPECS
 from scaling_llms.registries.datasets.artifacts import DatasetArtifacts
 from scaling_llms.storage.base import RegistryStorage
@@ -94,86 +95,33 @@ class DataRegistry(RegistryDB):
 
     def find_dataset_path(
         self,
-        dataset_name: str,
-        tokenizer_name: str,
-        dataset_config: str | None = None,
-        train_split: str | None = None,
-        eval_split: str | None = None,
-        text_field: str | None = None,
+        identity: DatasetIdentity,
         raise_if_not_found: bool = True,
     ) -> Path | None:
+        kwargs = identity.as_kwargs()
+        where = " AND ".join(f"{col} IS :{col}" for col in kwargs)
         row = self.fetchone(
-            """
-            SELECT artifacts_path FROM datasets
-            WHERE 
-                dataset_name=? 
-                AND dataset_config IS ?
-                AND train_split IS ? 
-                AND eval_split IS ? 
-                AND tokenizer_name=?
-                AND text_field IS ?
-            """,
-            (
-                dataset_name, 
-                dataset_config, 
-                train_split, 
-                eval_split, 
-                tokenizer_name, 
-                text_field
-            ),
+            f"SELECT artifacts_path FROM datasets WHERE {where}",
+            kwargs,
         )
 
-        if (row is None) and raise_if_not_found:
-            raise FileNotFoundError(
-                "Dataset not found for metadata: "
-                f"({dataset_name}, {dataset_config}, {train_split}, {eval_split}, {tokenizer_name}, {text_field})"
-            )
+        if row is None and raise_if_not_found:
+            raise FileNotFoundError(f"Dataset not found for identity: {identity}")
 
         return (self.artifacts_root / Path(row[0])) if row is not None else None
 
-    def dataset_exists(
-        self,
-        dataset_name: str,
-        tokenizer_name: str,
-        dataset_config: str | None = None,
-        train_split: str | None = None,
-        eval_split: str | None = None,
-        text_field: str | None = None,
-    ) -> bool:
-        path = self.find_dataset_path(
-            dataset_name=dataset_name,             
-            tokenizer_name=tokenizer_name,         
-            dataset_config=dataset_config,
-            train_split=train_split,
-            eval_split=eval_split,
-            text_field=text_field,
-            raise_if_not_found=False,
-        )
+    def dataset_exists(self, identity: DatasetIdentity) -> bool:
+        path = self.find_dataset_path(identity, raise_if_not_found=False)
         return (path is not None) and path.exists()
-    
+
     def register_dataset(
         self,
         src_path_train_bin: str | Path,
         src_path_eval_bin: str | Path,
-        dataset_name: str,
-        tokenizer_name: str,
-        dataset_config: str | None = None,
-        train_split: str | None = None,
-        eval_split: str | None = None,
-        text_field: str | None = None,
-        vocab_size: int | None = None,
-        total_train_tokens: int | None = None,
-        total_eval_tokens: int | None = None,
+        identity: DatasetIdentity,
+        **kwargs,
     ) -> Path:
-        # Validate dataset with same metadata doesn't already exist
-        if self.dataset_exists(
-            dataset_name=dataset_name,
-            tokenizer_name=tokenizer_name,
-            dataset_config=dataset_config,
-            train_split=train_split,
-            eval_split=eval_split,
-            text_field=text_field
-        ):
+        if self.dataset_exists(identity):
             raise FileExistsError("Dataset with the same metadata already exists.")
 
         # Validate source paths exist
@@ -192,80 +140,29 @@ class DataRegistry(RegistryDB):
         shutil.copy2(src_train, dst.train_bin)
         shutil.copy2(src_eval, dst.eval_bin)
 
-        created_at = get_local_iso_timestamp()
-        artifacts_path = str(dataset_dir.relative_to(self.artifacts_root).as_posix())
+        params = {
+            **identity.as_kwargs(),
+            **kwargs,
+            "artifacts_path": str(dataset_dir.relative_to(self.artifacts_root).as_posix()),
+            "dataset_absolute_path": str(dataset_dir.resolve().as_posix()),
+            "created_at": get_local_iso_timestamp(),
+        }
 
-        params = (
-            dataset_name, dataset_config, train_split, eval_split, tokenizer_name, text_field,
-            vocab_size, total_train_tokens, total_eval_tokens, artifacts_path,
-            str(dataset_dir.resolve().as_posix()), created_at
-        )
-        for i, p in enumerate(params, start=1):
-            if isinstance(p, Path):
-                raise TypeError(f"Param {i} is Path: {p}")
-            
-        self.execute(
-            """
-            INSERT INTO datasets (
-                dataset_name,
-                dataset_config,
-                train_split,
-                eval_split,
-                tokenizer_name,
-                text_field,
-                vocab_size,
-                total_train_tokens,
-                total_eval_tokens,
-                artifacts_path,
-                dataset_absolute_path,
-                created_at
-            )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                dataset_name, 
-                dataset_config, 
-                train_split, 
-                eval_split, 
-                tokenizer_name, 
-                text_field,
-                vocab_size, 
-                total_train_tokens, 
-                total_eval_tokens, 
-                artifacts_path, 
-                str(dataset_dir.resolve().as_posix()), 
-                created_at
-            )
-        )
+        cols = ", ".join(params)
+        placeholders = ", ".join(f":{col}" for col in params)
+        self.execute(f"INSERT INTO datasets ({cols}) VALUES ({placeholders})", params)
 
         return dataset_dir
 
     def delete_dataset(
         self,
         dataset_path: str | Path | None = None,
-        dataset_name: str | None = None,
-        dataset_config: str | None = None,
-        train_split: str | None = None,
-        eval_split: str | None = None,
-        tokenizer_name: str | None = None,
-        text_field: str | None = None,
+        identity: DatasetIdentity | None = None,
         confirm: bool = True,
     ) -> None:
         if dataset_path is None:
-            min_metadata_provided = (dataset_name is not None) and (tokenizer_name is not None)
-            assert min_metadata_provided, "Must provide either dataset_path or dataset_name and tokenizer_name"
-            dataset_path = self.find_dataset_path(
-                dataset_name=dataset_name,
-                dataset_config=dataset_config,
-                train_split=train_split,
-                eval_split=eval_split,
-                tokenizer_name=tokenizer_name,
-                text_field=text_field,
-                raise_if_not_found=False,
-            )
-
-        if dataset_path is None:
-            raise FileNotFoundError("Dataset not found (no matching metadata and no dataset_path provided).")
+            assert identity is not None, "Must provide either dataset_path or identity"
+            dataset_path = self.find_dataset_path(identity, raise_if_not_found=False)
 
         path = Path(dataset_path)
         rel_path = path
@@ -286,8 +183,8 @@ class DataRegistry(RegistryDB):
             shutil.rmtree(abs_path)
 
         self.execute(
-            "DELETE FROM datasets WHERE artifacts_path=?",
-            (str(rel_path.as_posix()),),
+            "DELETE FROM datasets WHERE artifacts_path=:artifacts_path",
+            {"artifacts_path": str(rel_path.as_posix())},
         )
 
     # --- internal ---

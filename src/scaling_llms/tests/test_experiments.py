@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from scaling_llms.experiments import ExperimentRunner
-from scaling_llms.constants import RUN_FILES, METRIC_CATS
+from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.trainer import Trainer
 
 
@@ -95,18 +95,21 @@ def test_experiment_runner_start(data_kwargs, gpt_hparams, trainer_kwargs):
     assert run.root.exists()
 
     run.start(resume=True)
-    for filename in RUN_FILES.as_list():
-        # Metadata
+    # Metadata
+    for filename in METADATA_FILES.as_list():
         if filename.endswith(".json") or filename.endswith("log"):
             file_path = run.artifacts.metadata_path(filename)
             assert file_path.exists(), f"Expected metadata file {filename} to be logged"
-        
-        # Checkpoints
-        elif filename.endswith(".pt"):
+        else:
+            raise ValueError(f"Unexpected file name {filename} in METADATA_FILES")
+
+    # Checkpoints
+    for filename in CKPT_FILES.as_list():
+        if filename.endswith(".pt"):
             file_path = run.artifacts.checkpoint_path(filename)
             assert file_path.exists(), f"Expected checkpoint file {filename} to be saved"
         else:
-            raise ValueError(f"Unexpected file name {filename} in RUN_FILES")
+            raise ValueError(f"Unexpected file name {filename} in CKPT_FILES")
 
     # Metrics
     for cat in METRIC_CATS.as_list():
@@ -133,17 +136,17 @@ def test_experiment_runner_resume(data_kwargs, gpt_hparams, trainer_kwargs):
     # Case 1: Attempt to resume from last checkpoint
     # With max_steps not provided, should fail since training is already complete
     with pytest.raises(ValueError, match=r"Training already complete or beyond target"):
-        exp.resume(RUN_FILES.last_ckpt)
+        exp.resume(CKPT_FILES.last_ckpt)
 
     # Case 2: Now attempt to resume from best checkpoint which should work because
     # best_ckpt is saved at step 2 (eval_log_freq) and num_steps is 3, 
     # so there is still one step left to train
-    resumed = exp.resume(RUN_FILES.best_ckpt)
+    resumed = exp.resume(CKPT_FILES.best_ckpt)
     assert resumed.step_idx == trainer_kwargs["num_steps"], "Resumed trainer did not load the best checkpoint"
 
     # Case 3: Now attempt to resume from last checkpoint but allow additional steps so it doesn't error out
     num_resume_steps = 2
-    trainer_resumed = exp.resume(RUN_FILES.last_ckpt, max_steps=trainer_kwargs["num_steps"] + num_resume_steps)
+    trainer_resumed = exp.resume(CKPT_FILES.last_ckpt, max_steps=trainer_kwargs["num_steps"] + num_resume_steps)
     assert trainer_resumed.step_idx - trainer.step_idx == num_resume_steps
 
    
@@ -163,7 +166,7 @@ def test_experiment_runner_start_from_checkpoint(data_kwargs, gpt_hparams, train
         data_kwargs=data_kwargs2,
         ckpt_exp_name=EXPERIMENT_NAME,
         ckpt_run_name=RUN_NAME,
-        ckpt_filename=RUN_FILES.best_ckpt,
+        ckpt_filename=CKPT_FILES.best_ckpt,
         max_steps=num_steps
     )
     assert trainer2.step_idx == num_steps, "Trainer initialized from checkpoint did not reset step index correctly"
@@ -177,5 +180,5 @@ def test_experiment_runner_start_from_checkpoint(data_kwargs, gpt_hparams, train
             data_kwargs=data_kwargs2,
             ckpt_exp_name=EXPERIMENT_NAME,
             ckpt_run_name=RUN_NAME,
-            ckpt_filename=RUN_FILES.best_ckpt,
+            ckpt_filename=CKPT_FILES.best_ckpt,
         )

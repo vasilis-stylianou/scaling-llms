@@ -8,7 +8,7 @@ from scaling_llms.registries.datasets.identity import DATASET_IDENTITY_COLS
 DATASETS_TABLE = TableSpec(
     name="datasets",
     columns=[
-        # Identity fields
+        # Identity fields (Used for dataset lookup and must be immutable after registration)
         ColumnSpec("dataset_name", "TEXT", nullable=False),
         ColumnSpec("dataset_config", "TEXT", nullable=True, default_sql="NULL"),
         ColumnSpec("train_split", "TEXT", nullable=True, default_sql="NULL"),
@@ -16,12 +16,14 @@ DATASETS_TABLE = TableSpec(
         ColumnSpec("tokenizer_name", "TEXT", nullable=True, default_sql="NULL"),
         ColumnSpec("text_field", "TEXT", nullable=True, default_sql="NULL"),
         
-        # Metadata fields
-        ColumnSpec("vocab_size", "INTEGER", nullable=True, default_sql="NULL"),
-        ColumnSpec("total_tokens", "INTEGER", nullable=True, default_sql="NULL"),
+        # Artifact fields (Created at dataset registration time, not nullable)
         ColumnSpec("artifacts_path", "TEXT", nullable=False, ),
         ColumnSpec("dataset_absolute_path", "TEXT", nullable=False),
         ColumnSpec("created_at", "TEXT", nullable=False),
+
+        # Metadata fields (Optional)
+        ColumnSpec("vocab_size", "INTEGER", nullable=True, default_sql="NULL"),
+        ColumnSpec("total_tokens", "INTEGER", nullable=True, default_sql="NULL"),
         ColumnSpec("total_train_tokens", "INTEGER", nullable=True, default_sql="NULL"),
         ColumnSpec("total_eval_tokens", "INTEGER", nullable=True, default_sql="NULL"),
     ],

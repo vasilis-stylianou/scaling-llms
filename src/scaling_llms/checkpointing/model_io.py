@@ -5,7 +5,8 @@ from typing import Any, Tuple
 import torch
 from dataclasses import dataclass
 
-from scaling_llms.constants import RUN_FILES, CHECKPOINT_KEYS
+from scaling_llms.checkpointing.manager import CHECKPOINT_KEYS
+from scaling_llms.constants import METADATA_FILES
 from scaling_llms.tracking.run import Run
 
 
@@ -49,7 +50,7 @@ def instantiate_model_from_run(run: Run) -> torch.nn.Module:
     """
 
     # Load model and config class info
-    model_class_path = run.artifacts.metadata_path(RUN_FILES.model_class)
+    model_class_path = run.artifacts.metadata_path(METADATA_FILES.model_class)
     class_info = json.loads(model_class_path.read_text())
 
     # Dynamically load the model and config class
@@ -57,7 +58,7 @@ def instantiate_model_from_run(run: Run) -> torch.nn.Module:
     ConfigClass = load_config_class(class_info)
     
     # Load model config
-    model_cfg_path = run.artifacts.metadata_path(RUN_FILES.model_config)
+    model_cfg_path = run.artifacts.metadata_path(METADATA_FILES.model_config)
     model_cfg = ConfigClass.from_json(model_cfg_path)
     
     # Instantiate model

@@ -4,16 +4,15 @@ import pandas as pd
 from scaling_llms.registries import GoogleDriveRunRegistry, RunManager
 from scaling_llms.constants import (
     METRIC_CATS,
-    METRIC_SCHEMA, 
-    RUN_FILES,
+    METADATA_FILES,
     PROJECT_DEV_NAME,
     PROJECT_NAME,
 )
-from scaling_llms.utils.trackers import JsonlTrackerReader
+from scaling_llms.tracking.trackers import JsonlTrackerReader, METRIC_SCHEMA
 
 
 def compute_expected_init_train_metrics(run: RunManager) -> dict[str, float]:
-    model_config = json.loads(run.get_metadata_path(RUN_FILES.model_config).read_text())
+    model_config = json.loads(run.artifacts.metadata_path(METADATA_FILES.model_config).read_text())
     proba = 1 / model_config["vocab_size"]
     nll = -math.log(proba)
     ppl = math.exp(nll)
@@ -22,8 +21,10 @@ def compute_expected_init_train_metrics(run: RunManager) -> dict[str, float]:
 def validate_init_nll(
     run_reg: GoogleDriveRunRegistry,
     experiment_name: str, 
-    metric_reader: "StepMetricsReader", # TODO
-    rel_tol=1e-2
+    metric_reader: "StepMetricsReader",
+    rel_tol: float = 1e-2,
+    raise_on_mismatch: bool = False
+
 ):
 
     for run_name in metric_reader.list_run_names():
@@ -39,10 +40,16 @@ def validate_init_nll(
             metric_name="nll",
             step=0
         )
+        is_close = math.isclose(observed_nll, expected_nll, rel_tol=rel_tol)
         msg = f"Observed NLL at step=0 does not match expected value (~ -log(1/vocab_size)) for run_name='{run_name}'"
-        assert math.isclose(expected_nll, observed_nll, rel_tol=rel_tol), msg
 
-    print("Observed NLL at step=0 matches expected value (~ -log(1/vocab_size)) for all runs.")
+        if raise_on_mismatch:
+            assert is_close, msg
+        elif not is_close:
+            print("WARNING: " + msg)
+            
+    if raise_on_mismatch:
+        print("Observed NLL at step=0 matches expected value (~ -log(1/vocab_size)) for all runs.")
 
 
 class StepMetricsReader:

@@ -32,21 +32,21 @@
   3. If Drive memmaps are missing, build locally, then copy to Drive.
   4. Dataloaders always read from local memmaps for speed.
 - **Metadata:** serialize `DataConfig` and store it in `run.metadata`.
-  - `run.log_metadata(data_cfg, RUN_FILES.data_config, format="json")`
+  - `run.log_metadata(data_cfg, METADATA_FILES.data_config, format="json")`
 
 ## Step 3: Initialize Model
 - **Input:** `GPTConfig`
 - **Main:** `model = GPTModel(cfg)`
 - **Output:** `model`
 - **Metadata:** serialize `GPTConfig` and store it in `run.metadata`.
-  - `run.log_metadata(model_cfg, RUN_FILES.model_config, format="json")`
+  - `run.log_metadata(model_cfg, METADATA_FILES.model_config, format="json")`
 
 ## Step 4: Initialize Trainer
 - **Input:** `TrainerConfig`
 - **Main:** `trainer = Trainer(cfg, model, train_dl, eval_dl, run=run)`
 - **Output:** `trainer`
 - **Metadata:** serialize `TrainerConfig` and store it in `run.metadata`.
-  - `run.log_metadata(trainer_cfg, RUN_FILES.trainer_config, format="json")`
+  - `run.log_metadata(trainer_cfg, METADATA_FILES.trainer_config, format="json")`
 
 ## Step 5: Train
 - **Main:** `trainer.train()`

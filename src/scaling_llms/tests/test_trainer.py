@@ -5,7 +5,7 @@ import torch
 from dataclasses import asdict
 from torch.utils.data import DataLoader, TensorDataset
 
-from scaling_llms.constants import RUN_FILES, METRIC_CATS
+from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.models import GPTModel, GPTConfig
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.tracking.helpers import log_as_json
@@ -339,7 +339,7 @@ def test_trainer_train_resume_logic(trainer):
 
 def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run, trainer):
 
-    trainer.run.log_metadata(minimal_trainer_config, RUN_FILES.trainer_config, format="json")
+    trainer.run.log_metadata(minimal_trainer_config, METADATA_FILES.trainer_config, format="json")
     trainer.train()
 
     ckpt_path = trainer.save_checkpoint("roundtrip.pt")
@@ -403,8 +403,8 @@ def test_trainer_checkpointing_writes_files(extended_trainer):
 
     trainer.train(max_steps=2) # ckpt_log_freq = 1
 
-    last_ckpt = trainer.run.checkpoints_dir / RUN_FILES.last_ckpt
-    best_ckpt = trainer.run.checkpoints_dir / RUN_FILES.best_ckpt
+    last_ckpt = trainer.run.checkpoints_dir / CKPT_FILES.last_ckpt
+    best_ckpt = trainer.run.checkpoints_dir / CKPT_FILES.best_ckpt
     assert last_ckpt.exists()
     assert best_ckpt.exists()
 

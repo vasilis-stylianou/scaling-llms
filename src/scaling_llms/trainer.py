@@ -11,7 +11,7 @@ from scaling_llms.checkpointing.model_io import (
     get_model_class_info, 
     instantiate_model_from_run
 )
-from scaling_llms.constants import RUN_FILES, METRIC_CATS
+from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.tracking.run import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
@@ -251,7 +251,7 @@ class Trainer:
             Trainer instance restored from checkpoint
         """
         # Load trainer configs from metadata dir
-        cfg = TrainerConfig.from_json(run.artifacts.metadata_path(RUN_FILES.trainer_config))
+        cfg = TrainerConfig.from_json(run.artifacts.metadata_path(METADATA_FILES.trainer_config))
         
         # Auto-instantiate model if not provided
         model = model or instantiate_model_from_run(run)
@@ -289,9 +289,9 @@ class Trainer:
         
         # Log model metadata on first run (step_idx == 0)
         if self.step_idx == 0 and self.run is not None:
-            self.run.log_metadata(self.model.cfg, RUN_FILES.model_config, format="json")
-            self.run.log_metadata(get_model_class_info(self.model), RUN_FILES.model_class, format="json")
-            self.run.log_metadata(self.cfg, RUN_FILES.trainer_config, format="json")
+            self.run.log_metadata(self.model.cfg, METADATA_FILES.model_config, format="json")
+            self.run.log_metadata(get_model_class_info(self.model), METADATA_FILES.model_class, format="json")
+            self.run.log_metadata(self.cfg, METADATA_FILES.trainer_config, format="json")
         
         self.logger.log_start(
             model_params=f"{sum(p.numel() for p in self.model.parameters()):,}",
@@ -351,7 +351,7 @@ class Trainer:
                     self.logger.log_checkpoint(f"New best checkpoint at step {self.step_idx}")
                     self.best_eval_nll = eval_metrics["nll"]
                     self.best_step_idx = self.step_idx
-                    self.save_checkpoint(RUN_FILES.best_ckpt)
+                    self.save_checkpoint(CKPT_FILES.best_ckpt)
 
             # Checkpoint
             if (
@@ -373,7 +373,7 @@ class Trainer:
         # POST-TRAINING LOGGING
         # Always save a final checkpoint at the end of training if checkpointing is enabled
         if (self.ckpt_manager is not None) and (self.cfg.ckpt_log_freq > 0):
-            self.save_checkpoint(RUN_FILES.last_ckpt)
+            self.save_checkpoint(CKPT_FILES.last_ckpt)
 
     @torch.no_grad()
     def evaluate(self, eval_dl) -> dict:
