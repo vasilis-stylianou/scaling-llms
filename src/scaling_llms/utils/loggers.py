@@ -85,7 +85,7 @@ class BaseLogger:
     level: int = logging.DEBUG
 
     # If True, bubble to root logger (usually False for per-run loggers)
-    propagate: bool = False
+    propagate_to_root: bool = True
 
     # File logging
     file_name: str | None = None
@@ -95,7 +95,7 @@ class BaseLogger:
     console: bool = False
     console_level: int = logging.INFO
 
-    fmt: str = "%(asctime)s | %(message)s"
+    fmt: str = "%(asctime)s | %(name)s | %(message)s"
     datefmt: str = "%Y-%m-%d %H:%M:%S"
 
     _logger: logging.Logger = dataclasses.field(init=False, repr=False)
@@ -105,7 +105,7 @@ class BaseLogger:
     def __post_init__(self) -> None:
         self._logger = logging.getLogger(self.name)
         self._logger.setLevel(self.level)
-        self._logger.propagate = self.propagate
+        self._logger.propagate = self.propagate_to_root
 
         # Notebook-safe: remove existing handlers (same logger name persists across cell re-runs)
         for h in list(self._logger.handlers):

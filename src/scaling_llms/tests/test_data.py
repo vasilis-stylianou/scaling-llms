@@ -6,6 +6,10 @@ from scaling_llms.data import DataConfig, get_dataloaders
 from scaling_llms.storage.base import RegistryStorage
 from scaling_llms.registries.datasets.registry import DataRegistry
 
+
+# ============================================================
+# FIXTURES
+# ============================================================
 @pytest.fixture
 def base_configs(tmp_path: Path):
     local_data_dir = tmp_path / "local_data"
@@ -54,6 +58,9 @@ def data_registry(tmp_path: Path):
     return DataRegistry.from_storage(storage)
 
 
+# ============================================================
+# TESTS
+# ============================================================
 def test_data_loaders(base_configs, data_registry):
     cfg = DataConfig(**base_configs)
     dl_dict = get_dataloaders(cfg, data_registry)
@@ -143,6 +150,7 @@ def test_dataset_creation_configs(base_configs, data_registry):
         "different train_split": dict(train_split="train[10%:20%]"),
         "different eval_split": dict(eval_split="test[10%:20%]"),
         "different dataset_config": dict(dataset_config="copa"),
+        "different text_field": dict(text_field="hypothesis"),
     }
     num_registered_datasets = len(data_registry.get_datasets_as_df())
     for msg,diff_configs in msg2diff_configs.items():

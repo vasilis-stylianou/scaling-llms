@@ -193,7 +193,7 @@ def make_trainer_logger(run: Run | None) -> TrainerLogger:
         log_dir=run.metadata_dir if run is not None else None,  # writes metadata/train.log
         file_name=str(METADATA_FILES.train_log) if run is not None else None,
         level=logging.DEBUG, # global logger threshold (allow DEBUG messages through)
-        propagate=False, # do NOT propagate to root
+        propagate_to_root=False, # do NOT propagate to root
         file_level=logging.DEBUG, # file captures everything
         console=True,
         console_level=logging.INFO, # console prints high-level only
