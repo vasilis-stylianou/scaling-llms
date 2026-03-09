@@ -11,8 +11,9 @@ from scaling_llms.constants import (
     PROJECT_NAME,
     PROJECT_DEV_NAME,
 )
-from scaling_llms.data import DataConfig, get_dataloaders
+from scaling_llms.data import DataLoaderConfig, get_dataloaders
 from scaling_llms.models import GPTConfig, GPTModel
+from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.runs.identity import RunIdentity
 from scaling_llms.storage.google_drive import (
     make_gdrive_data_registry,
@@ -46,7 +47,8 @@ class ExperimentRunner:
     def start(
         self,
         run_name: str,
-        data_kwargs: dict[str, Any],
+        dataset_kwargs: dict[str, Any],
+        dataloader_kwargs: dict[str, Any],
         gpt_hparams: dict[str, Any],
         trainer_kwargs: dict[str, Any],
         max_steps: int | None = None,
@@ -57,8 +59,8 @@ class ExperimentRunner:
             print(f"Run {self.exp_name}/{run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
             return None  
 
-
-        data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
+        dataset_id = DatasetIdentity(**dataset_kwargs)
+        dl_cfg = DataLoaderConfig(**dataloader_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
         with self.run_registry.managed_run(
@@ -68,7 +70,8 @@ class ExperimentRunner:
         ) as run:
             trainer = self._init_trainer(
                 run=run,
-                data_cfg=data_cfg,
+                dataset_id=dataset_id,
+                dl_cfg=dl_cfg,
                 trainer_cfg=trainer_cfg,
                 gpt_hparams=gpt_hparams,
             )
@@ -93,7 +96,8 @@ class ExperimentRunner:
     def start_from_checkpoint(
         self,
         run_name: str,
-        data_kwargs: dict[str, Any],
+        dataset_kwargs: dict[str, Any],
+        dataloader_kwargs: dict[str, Any],
         ckpt_exp_name: str,
         ckpt_run_name: str,
         ckpt_filename: str,
@@ -113,10 +117,16 @@ class ExperimentRunner:
                 "source_checkpoint.json",
                 format="json",
             )
-            data_cfg = DataConfig(local_data_dir=self.local_data_dir, **data_kwargs)
-            new_run.log_metadata(data_cfg, METADATA_FILES.data_config, format="json")
+            dataset_id = DatasetIdentity(**dataset_kwargs)
+            dl_cfg = DataLoaderConfig(**dataloader_kwargs)
+
+            new_run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
             dl_dict = get_dataloaders(
-                cfg=data_cfg, data_registry=self.data_registry, run=new_run
+                dataset_id=dataset_id,
+                data_registry=self.data_registry,
+                dataloader_config=dl_cfg,
+                local_data_dir=self.local_data_dir,
+                run=new_run,
             )
 
             # Open old run just long enough to load ckpt into a Trainer object
@@ -127,17 +137,16 @@ class ExperimentRunner:
             ) as old_run:
                 # Validate sequence length matches between old and new runs
                 old_data_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(METADATA_FILES.data_config).read_text()
+                    old_run.artifacts.metadata_path(METADATA_FILES.dataset_id).read_text()
                 )  
                 
-                # Ensure data config is present in old run metadata
-                if old_data_kwargs["seq_len"] != data_kwargs["seq_len"]:
+                if old_data_kwargs["seq_len"] != dataloader_kwargs["seq_len"]:
                     self.delete_run(
                         run_name=run_name,
                         confirm=False
                     )  # Clean up new run since it won't be usable
                     raise ValueError(
-                        f"Sequence length mismatch between old run ({old_data_kwargs['seq_len']}) and new run ({data_kwargs['seq_len']}). "
+                        f"Sequence length mismatch between old run ({old_data_kwargs['seq_len']}) and new run ({dataloader_kwargs['seq_len']}). "
                         "Checkpoint loading may fail."
                     )
 
@@ -177,10 +186,10 @@ class ExperimentRunner:
 
     # --- Internal methods ---
     def _build_model(
-        self, data_cfg: DataConfig, vocab_size: int, gpt_hparams: dict[str, Any]
+        self, seq_len: int, vocab_size: int, gpt_hparams: dict[str, Any]
     ) -> GPTModel:
         model_cfg = GPTConfig(
-            seq_len=data_cfg.seq_len,
+            seq_len=seq_len,
             vocab_size=vocab_size,
             **gpt_hparams,
         )
@@ -190,17 +199,23 @@ class ExperimentRunner:
         self,
         *,
         run: Any,
-        data_cfg: DataConfig,
+        dataset_id: DatasetIdentity,
+        dl_cfg: DataLoaderConfig,
         trainer_cfg: TrainerConfig,
         gpt_hparams: dict[str, Any],
     ) -> Trainer:
         dl_dict = get_dataloaders(
-            cfg=data_cfg, data_registry=self.data_registry, run=run
+            dataset_id=dataset_id,
+            data_registry=self.data_registry,
+            dataloader_config=dl_cfg,
+            local_data_dir=self.local_data_dir,
+            run=run,
         )
-        run.log_metadata(data_cfg, METADATA_FILES.data_config, format="json")
+        run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+        run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
 
         model = self._build_model(
-            data_cfg=data_cfg,
+            seq_len=dl_cfg.seq_len,
             vocab_size=dl_dict["info"]["vocab_size"],
             gpt_hparams=gpt_hparams,
         )
@@ -221,15 +236,22 @@ class ExperimentRunner:
             reset_state=False,  # Load full trainer state by default when resuming
         )
 
-        # Load dataloaders 
-        # NOTE: Offset train dataloader start index by trainer's current step to ensure correct resumption
-        data_cfg = DataConfig.from_json(
-            path=run.artifacts.metadata_path(METADATA_FILES.data_config),
-            overwrite_data={"start_sample_idx": trainer.step_idx}
+        # Reload dataset identity and dataloader config from run metadata,
+        # offsetting start_sample_idx by the trainer's current step for correct resumption.
+        dataset_id = DatasetIdentity.from_json(
+            path=run.artifacts.metadata_path(METADATA_FILES.dataset_id)
+        )
+        dl_cfg = DataLoaderConfig.from_json(
+            path=run.artifacts.metadata_path(METADATA_FILES.dataloader_config),
+            overwrite_data={"start_sample_idx": trainer.step_idx},
         )
 
         dl_dict = get_dataloaders(
-            cfg=data_cfg, data_registry=self.data_registry, run=run
+            dataset_id=dataset_id,
+            data_registry=self.data_registry,
+            dataloader_config=dl_cfg,
+            local_data_dir=self.local_data_dir,
+            run=run,
         )
 
         # Attach dataloaders to trainer

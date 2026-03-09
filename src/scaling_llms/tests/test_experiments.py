@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from scaling_llms.experiments import ExperimentRunner
@@ -32,8 +30,7 @@ def exp():
     return ExperimentRunner(EXPERIMENT_NAME, is_dev=True)
  
 @pytest.fixture
-def data_kwargs():
-    
+def dataset_kwargs():
     return dict(
         dataset_name="glue",
         dataset_config="sst2",
@@ -41,10 +38,16 @@ def data_kwargs():
         eval_split="test[:10%]",
         tokenizer_name="gpt2_tiktoken",
         text_field="sentence",
+    )
+
+@pytest.fixture
+def dataloader_kwargs():
+    return dict(
         seq_len=16,
         train_batch_size=8,
         eval_batch_size=8,
         start_sample_idx=0,
+        seed=42,
     )
 
 @pytest.fixture
@@ -70,11 +73,12 @@ def trainer_kwargs():
     )
 
 
-def test_experiment_runner_start(exp, data_kwargs, gpt_hparams, trainer_kwargs):
+def test_experiment_runner_start(exp, dataset_kwargs, dataloader_kwargs, gpt_hparams, trainer_kwargs):
 
     trainer = exp.start(
         run_name=RUN_NAME,
-        data_kwargs=data_kwargs,
+        dataset_kwargs=dataset_kwargs,
+        dataloader_kwargs=dataloader_kwargs,
         gpt_hparams=gpt_hparams,
         trainer_kwargs=trainer_kwargs,
     )
@@ -115,10 +119,11 @@ def test_experiment_runner_start(exp, data_kwargs, gpt_hparams, trainer_kwargs):
     run.close()
 
 
-def test_experiment_runner_resume(exp, data_kwargs, gpt_hparams, trainer_kwargs):
+def test_experiment_runner_resume(exp, dataset_kwargs, dataloader_kwargs, gpt_hparams, trainer_kwargs):
     trainer = exp.start(
         run_name=RUN_NAME,
-        data_kwargs=data_kwargs,
+        dataset_kwargs=dataset_kwargs,
+        dataloader_kwargs=dataloader_kwargs,
         gpt_hparams=gpt_hparams,
         trainer_kwargs=trainer_kwargs,
     )
@@ -141,20 +146,21 @@ def test_experiment_runner_resume(exp, data_kwargs, gpt_hparams, trainer_kwargs)
     assert trainer_resumed.step_idx - trainer.step_idx == num_resume_steps
 
    
-def test_experiment_runner_start_from_checkpoint(exp, data_kwargs, gpt_hparams, trainer_kwargs):
+def test_experiment_runner_start_from_checkpoint(exp, dataset_kwargs, dataloader_kwargs, gpt_hparams, trainer_kwargs):
     _ = exp.start(
         run_name=RUN_NAME,
-        data_kwargs=data_kwargs,
+        dataset_kwargs=dataset_kwargs,
+        dataloader_kwargs=dataloader_kwargs,
         gpt_hparams=gpt_hparams,
         trainer_kwargs=trainer_kwargs,
     )
 
     # Now attempt to start a new run initialized from the best checkpoint of the previous run
-    data_kwargs2 = data_kwargs.copy()
     num_steps = 5
     trainer2 = exp.start_from_checkpoint(
         run_name="new_run",
-        data_kwargs=data_kwargs2,
+        dataset_kwargs=dataset_kwargs,
+        dataloader_kwargs=dataloader_kwargs,
         ckpt_exp_name=EXPERIMENT_NAME,
         ckpt_run_name=RUN_NAME,
         ckpt_filename=CKPT_FILES.best_ckpt,
@@ -165,11 +171,12 @@ def test_experiment_runner_start_from_checkpoint(exp, data_kwargs, gpt_hparams, 
 
     # Now attempt to start a new run initialized from the same checkpoint 
     # but with a different sequence length which should raise an error
-    data_kwargs2["seq_len"] = data_kwargs2["seq_len"] // 2
+    bad_dl_kwargs = {**dataloader_kwargs, "seq_len": dataloader_kwargs["seq_len"] // 2}
     with pytest.raises(ValueError, match=r"Sequence length mismatch between old run"):
         exp.start_from_checkpoint(
             run_name="new_run_2",
-            data_kwargs=data_kwargs2,
+            dataset_kwargs=dataset_kwargs,
+            dataloader_kwargs=bad_dl_kwargs,
             ckpt_exp_name=EXPERIMENT_NAME,
             ckpt_run_name=RUN_NAME,
             ckpt_filename=CKPT_FILES.best_ckpt,

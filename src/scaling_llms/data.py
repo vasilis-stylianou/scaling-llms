@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 import logging
@@ -22,10 +22,10 @@ from scaling_llms.constants import (
     METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
 )
+from scaling_llms.registries.datasets.artifacts import TokenizedDatasetInfo
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
 from scaling_llms.tracking.run import Run
-from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger
 
 
@@ -133,13 +133,12 @@ def load_tokenizer(name: str):
 # MEMORY MAP BUILDER (tokenize once, reuse forever)
 # ============================================================
 def build_memmap_tokens(
-    *,
     token_mmap_path: str | Path,
     texts: list[str],
     encode_fn,
     eos_id: int,
-    dtype=np.uint16,
-    append_eos: bool = True,
+    dtype: np.dtype,
+    append_eos: bool,
 ) -> int:
     """
     Tokenize texts once into a contiguous, file-backed token buffer for
@@ -168,7 +167,8 @@ def build_memmap_tokens(
     # Skip tokenization if final memmap already exists
     if token_mmap_path.exists():
         print(f"Found existing token memmap at {token_mmap_path}, skipping tokenization.")
-        return # TODO: return existing token count from registry instead of None
+        existing_n_tokens = token_mmap_path.stat().st_size // np.dtype(dtype).itemsize
+        return int(existing_n_tokens)  
 
     print(f"Token memmap not found at {token_mmap_path}, building now...")
 
@@ -214,8 +214,11 @@ def build_memmap_tokens(
             pass
         raise
 
-    return total_tokens
+    return int(total_tokens)
 
+
+def load_memmap_tokens(local_mmap_path: str | Path, dtype: np.dtype) -> np.memmap:
+    return np.memmap(local_mmap_path, mode="r", dtype=dtype)
 
 # ============================================================
 # HUGGINGFACE DATASETS
@@ -335,227 +338,265 @@ class SequentialTokenChunks(Dataset):
 
 
 # ============================================================
-# DATA CONFIG
+# TOKENIZED DATASET FACTORY
 # ============================================================
-@dataclass
-class DataConfig(BaseJsonConfig):
-    # --- Registry identity (unique key) ---
-    dataset_name: str
-    train_split: str
-    eval_split: str
-    dataset_config: str | None
-    tokenizer_name: str 
-    text_field: str
-
-    # --- Dataloader params ---
-    seq_len: int
-    train_batch_size: int
-    eval_batch_size: int
-    start_sample_idx: int = 0
-    # Resume cursor (global sample index) for deterministic train schedule; 
-    # effectively an offset into the infinite stream of random windows.
-
-    # --- Local cache roots ---
-    local_data_dir: Path = LOCAL_DATA_DIR
-
-    # --- Other params ---
-    num_workers: int = 0
-    seed: int = 1234
-
-    # --- Derived paths (set in __post_init__) ---
-    hf_cache_dir: Path = field(init=False)
-    tokenized_cache_dir: Path = field(init=False)
-    local_train_mmap_path: Path = field(init=False)
-    local_eval_mmap_path: Path = field(init=False)
-
-    def __post_init__(self):
-        hf_cache_dir = Path(self.local_data_dir) / HF_CACHE_DIR_NAME
-        tokenized_cache_dir = Path(self.local_data_dir) / TOKENIZED_CACHE_DIR_NAME
-        object.__setattr__(self, "hf_cache_dir", hf_cache_dir)
-        object.__setattr__(self, "tokenized_cache_dir", tokenized_cache_dir)
-
-        self._validate_start_sample_idx()
-        self._configure_local_mmap_paths()
-
-    def identity(self) -> DatasetIdentity:
-        return DatasetIdentity(
-            dataset_name=self.dataset_name,
-            train_split=self.train_split,
-            eval_split=self.eval_split,
-            dataset_config=self.dataset_config,
-            tokenizer_name=self.tokenizer_name,
-            text_field=self.text_field,
+def make_tokenized_dataset(
+    dataset_id: DatasetIdentity,
+    data_registry: DataRegistry,
+    local_train_mmap_path: Path,
+    local_eval_mmap_path: Path,
+    local_hf_cache_dir: Path,
+    local_tokenized_cache_dir: Path,
+) -> Path:
+    """
+    TODO
+    """
+    # Ensure local dataset cache size does not exceed maximum allowed size
+    for cache_dir in [local_hf_cache_dir, local_tokenized_cache_dir]:
+        ensure_local_dataset_cache_cap(
+            cache_dir=cache_dir,
+            dataset_name=dataset_id.dataset_name,
+            dataset_config=dataset_id.dataset_config,
+            cap_size_gb=MAX_CACHE_GB,
         )
 
-    def _validate_start_sample_idx(self):
-        if self.start_sample_idx < 0:
-            raise ValueError(f"start_sample_idx must be >= 0, got {self.start_sample_idx}")
+    # Load tokenizer
+    tokenizer = load_tokenizer(dataset_id.tokenizer_name)
+    encode_fn, eos_id, vocab_size = tokenizer["encode"], tokenizer["eot_token"], tokenizer["vocab_size"]
 
-    def _configure_local_mmap_paths(self):
-        ident = self.identity()
+    # Use smallest unsigned dtype that can represent all token ids to save memory
+    dtype = np.dtype(np.uint16 if vocab_size <= 65535 else np.uint32)
+    
+    # STEP 1: Load raw text splits from HuggingFace datasets (optionally sliced) 
+    train_texts, eval_texts = load_text_splits_from_hf(
+        dataset_name=dataset_id.dataset_name,
+        train_split=dataset_id.train_split,
+        eval_split=dataset_id.eval_split,
+        dataset_config=dataset_id.dataset_config,
+        text_field=dataset_id.text_field,
+        cache_dir=local_hf_cache_dir,
+    )
 
-        local_dataset_path = self.tokenized_cache_dir / ident.slug()
+    # STEP 2: Tokenization 
+    # Tokenize to memmap once and reuse forever 
+    # (efficient random access without loading all tokens into RAM)
+    # Note: for large datasets, this may take time and disk space on first run,
+    # but subsequent runs will be fast and efficient due to memory-mapping.
+    local_train_mmap_path = local_train_mmap_path
+    local_eval_mmap_path = local_eval_mmap_path
 
-        object.__setattr__(
-            self,
-            "local_train_mmap_path",
-            local_dataset_path / DATA_FILES.train_tokens,
-        )
+    total_train_tokens = build_memmap_tokens(
+        token_mmap_path=local_train_mmap_path,
+        texts=train_texts,
+        encode_fn=encode_fn,
+        eos_id=eos_id,
+        dtype=dtype,
+        append_eos=True,
+    )
 
-        object.__setattr__(
-            self,
-            "local_eval_mmap_path",
-            local_dataset_path / DATA_FILES.eval_tokens,
-        )
+    total_eval_tokens = build_memmap_tokens(
+        token_mmap_path=local_eval_mmap_path,
+        texts=eval_texts,
+        encode_fn=encode_fn,
+        eos_id=eos_id,
+        dtype=dtype,
+        append_eos=True,
+    )
+
+    # STEP 3: Register dataset in Data Registry
+    dataset_info = TokenizedDatasetInfo(
+        vocab_size=vocab_size,
+        eos_id=eos_id,
+        dtype=dtype.name,
+        total_train_tokens=total_train_tokens,
+        total_eval_tokens=total_eval_tokens
+    )
+
+    registered_dataset_path = data_registry.register_dataset(
+        src_path_train_bin=local_train_mmap_path,
+        src_path_eval_bin=local_eval_mmap_path,
+        identity=dataset_id,
+        dataset_info=dataset_info,
+        vocab_size=vocab_size,
+        total_train_tokens=total_train_tokens,
+        total_eval_tokens=total_eval_tokens,
+    )
+
+    return registered_dataset_path
+
 
 # ============================================================
 # DATALOADER FACTORY
 # ============================================================
-def get_dataloaders(
-    cfg: DataConfig, 
-    data_registry: DataRegistry, 
-    run : Run | None = None
+@dataclass(frozen=True)
+class DataLoaderConfig:
+    seq_len: int
+    train_batch_size: int
+    eval_batch_size: int
+    start_sample_idx: int
+    seed: int
+
+    # (Optional) DataLoader performance
+    num_workers: int = 1
+    pin_memory: bool = True
+    drop_last: bool = False
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+
+    def __post_init__(self):
+        if self.start_sample_idx < 0:
+            raise ValueError(f"start_sample_idx must be >= 0, got {self.start_sample_idx}")
+
+
+def make_dataloaders(
+    # Token Mem-Map Info
+    local_train_mmap_path: Path,
+    local_eval_mmap_path: Path,
+    dtype: np.dtype,
+    # Dataloader Config
+    dataloader_config: DataLoaderConfig
 ) -> dict[str, Any]:
-        
-    """
-    Raw texts are downloaded and cached locally in `hf_cache_dir`
-    Tokenized memmaps are stored in `tokenized_cache_dir` and copied to Data Registry for persistence.
-        - data_registry/dataset_name/[dataset_config]/train.bin
-        - data_registry/dataset_name/[dataset_config]/val.bin
-    """
+
+    # STEP 1: Load token buffers using memory-mapping for efficient random access without loading all tokens into RAM
+    train_tokens_buffer = load_memmap_tokens(local_train_mmap_path, dtype=dtype)
+    eval_tokens_buffer = load_memmap_tokens(local_eval_mmap_path, dtype=dtype)
+
+    # STEP 2: Create deterministic train schedule (token-budget driven)
+    ## a) Train DS: deterministic random windows, with global sample index offset for resume
+    deterministic_train_ds = DeterministicTokenWindows(
+        tokens_mmap_buffer=train_tokens_buffer,
+        seq_len=dataloader_config.seq_len,
+        seed=dataloader_config.seed,
+    )
+    train_ds = OffsetDataset(
+        deterministic_train_ds,
+        offset_start=dataloader_config.start_sample_idx,
+    )
+
+    ## b) Eval DS: sequential non-overlapping chunks
+    eval_ds = SequentialTokenChunks(
+        eval_tokens_buffer,
+        seq_len=dataloader_config.seq_len,
+    )
+
+    # STEP 3: Create PyTorch dataloaders
+    dl_kwargs = dict(
+        shuffle=False, # windows are already deterministic/randomized
+        num_workers=dataloader_config.num_workers,
+        pin_memory=dataloader_config.pin_memory,
+        drop_last=dataloader_config.drop_last,
+        persistent_workers=dataloader_config.persistent_workers,
+        prefetch_factor=dataloader_config.prefetch_factor
+    )
+
+    train_dl = DataLoader(train_ds, batch_size=dataloader_config.train_batch_size, **dl_kwargs)
+    eval_dl = DataLoader(eval_ds, batch_size=dataloader_config.eval_batch_size, **dl_kwargs)
+
+    return {
+        "train": train_dl,
+        "eval": eval_dl,
+    }
+
+
+# ============================================================
+# HIGH-LEVEL DATALOADER FACTORY WITH REGISTRY INTEGRATION
+# ============================================================
+@dataclass(frozen=True)
+class LocalDataPaths:
+    local_data_dir: Path = LOCAL_DATA_DIR
+    hf_cache_dir: Path = field(init=False)
+    tokenized_cache_dir: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "hf_cache_dir", Path(self.local_data_dir) / HF_CACHE_DIR_NAME)
+        object.__setattr__(self, "tokenized_cache_dir", Path(self.local_data_dir) / TOKENIZED_CACHE_DIR_NAME)
+
+    def dataset_dir(self, dataset_id: DatasetIdentity) -> Path:
+        return self.tokenized_cache_dir / dataset_id.slug()
+
+    def train_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
+        return self.dataset_dir(dataset_id) / DATA_FILES.train_tokens
+
+    def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
+        return self.dataset_dir(dataset_id) / DATA_FILES.eval_tokens
+    
+
+def get_dataloaders(
+    dataset_id: DatasetIdentity,
+    data_registry: DataRegistry,
+    dataloader_config: DataLoaderConfig,
+    local_data_dir: Path | None = None,
+    dataset_info: TokenizedDatasetInfo | None = None,
+    run: Run | None = None,
+) -> dict[str, Any]:
 
     logger = DataLogger(
         name="DataLoader",
         file_name=str(METADATA_FILES.data_log) if run is not None else None,
-        log_dir=run.metadata_dir if run is not None else None,  # writes metadata/train.log
+        log_dir=run.metadata_dir if run is not None else None,
         level=logging.INFO,
     )
-    logger.log_start(cfg)
 
-    set_determinism(cfg.seed)
+    # logger.log_token_buffer_loading(f"Loading token memmaps from {local_train_mmap_path.parent}...")
 
-    # Load tokenizer
-    tokenizer = load_tokenizer(cfg.tokenizer_name)
-    encode_fn, eos_id, vocab_size = tokenizer["encode"], tokenizer["eot_token"], tokenizer["vocab_size"]
+    # STEP 1: Prepare local paths for token memmaps 
+    # NOTE: these are the source for dataloader creation and also used for registry registration, 
+    # but the canonical "source of truth" for the dataset is the Data Registry.
+    override_kwargs = {} if local_data_dir is None else {"local_data_dir": local_data_dir}
+    local_data_paths = LocalDataPaths(**override_kwargs)
+    local_train_mmap_path = local_data_paths.train_mmap_path(dataset_id)
+    local_eval_mmap_path = local_data_paths.eval_mmap_path(dataset_id)
+    local_dataset_dir = local_data_paths.dataset_dir(dataset_id)
 
-    # Use smallest unsigned dtype that can represent all token ids to save memory
-    dtype = np.uint16 if vocab_size <= 65535 else np.uint32
-    
-    logger.log_batch_info(
-        vocab_size=vocab_size, 
-        seq_len=cfg.seq_len, 
-        train_batch_size=cfg.train_batch_size, 
-        eval_batch_size=cfg.eval_batch_size, 
-        dtype=f"np.{np.dtype(dtype).name}", 
-    )
-
-    # Get dataset identity for Data Registry lookup
-    ident = cfg.identity()
-    
-    # SKIP Steps 1-2 if memmaps already exist in Data Registry
-    if data_registry.dataset_exists(ident):
+    # STEP 2: Create tokenized dataset and register in Data Registry if not already present
+    if data_registry.dataset_exists(dataset_id):
         logger.log_dataset_loading("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
-        registered_dataset_path = data_registry.find_dataset_path(ident, raise_if_not_found=True)
+        registered_dataset_path = data_registry.find_dataset_path(dataset_id, raise_if_not_found=True)
     else:
         logger.log_dataset_loading("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
-
-        # Ensure local dataset cache size does not exceed maximum allowed size
-        for cache_dir in [cfg.hf_cache_dir, cfg.tokenized_cache_dir]:
-            ensure_local_dataset_cache_cap(
-                cache_dir=cache_dir,
-                dataset_name=ident.dataset_name,
-                dataset_config=ident.dataset_config,
-                cap_size_gb=MAX_CACHE_GB, # per cache dir
-            )
-
-        # --- STEP 1: Load raw text splits (optionally sliced) ---
-        # NOTE: if not using HuggingFace datasets, you can condition on (e.g. cfg.dataset_name in HF_DATASET_NAMES)
-        # and implement your own loading logic here to produce train_texts and eval_texts as lists of strings.
-        logger.log_dataloader_info("Loading raw text splits from HuggingFace...")
-        train_texts, eval_texts = load_text_splits_from_hf(
-            dataset_name=ident.dataset_name,
-            train_split=ident.train_split,
-            eval_split=ident.eval_split,
-            dataset_config=ident.dataset_config,
-            text_field=ident.text_field,
-            cache_dir=cfg.hf_cache_dir,
-        )   
-
-        # --- STEP 2: Tokenization ---
-        # Tokenize to memmap once and reuse forever 
-        # (efficient random access without loading all tokens into RAM)
-        # Note: for large datasets, this may take time and disk space on first run,
-        # but subsequent runs will be fast and efficient due to memory-mapping.
-        for mmap_path,texts in [(cfg.local_train_mmap_path, train_texts), (cfg.local_eval_mmap_path, eval_texts)]:
-            logger.log_tokenization(f"Tokenizing texts and building memmap at {mmap_path}...")
-            total_tokens = build_memmap_tokens(
-                token_mmap_path=mmap_path,
-                texts=texts,
-                encode_fn=encode_fn,
-                eos_id=eos_id,
-                dtype=dtype,
-            )
-            if mmap_path == cfg.local_train_mmap_path:
-                total_train_tokens = total_tokens
-            else:
-                total_eval_tokens = total_tokens
-
-        # Copy local memmaps to Data Registry
-        logger.log_tokenization("Registering token memmaps to Data Registry...")
-        registered_dataset_path = data_registry.register_dataset(
-            src_path_train_bin=cfg.local_train_mmap_path,
-            src_path_eval_bin=cfg.local_eval_mmap_path,
-            identity=ident,
-            vocab_size=vocab_size,
-            total_train_tokens=total_train_tokens,
-            total_eval_tokens=total_eval_tokens,
+        registered_dataset_path = make_tokenized_dataset(
+            dataset_id=dataset_id,
+            data_registry=data_registry,
+            local_train_mmap_path=local_train_mmap_path,
+            local_eval_mmap_path=local_eval_mmap_path,
+            local_hf_cache_dir=local_data_paths.hf_cache_dir,
+            local_tokenized_cache_dir=local_data_paths.tokenized_cache_dir,
         )
 
-    # --- STEP 3: Create token buffers for training and evaluation ---
-    if cfg.local_train_mmap_path.exists() and cfg.local_eval_mmap_path.exists():
-        logger.log_token_buffer_loading("Memmaps already exist locally, skipping copy from Data Registry.")
+    # STEP 3: Ensure local memmaps are available for dataloader creation
+    if local_train_mmap_path.exists() and local_eval_mmap_path.exists():
+        logger.log_dataset_loading("Memmaps already exist locally, skipping copy from Data Registry.")
     else: 
-        logger.log_token_buffer_loading("Memmaps not found locally, copying locally from Data Registry...")
-        data_registry.copy_dataset_to_local(registered_dataset_path, cfg.local_train_mmap_path.parent)        
+        logger.log_dataset_loading("Memmaps not found locally, copying locally from Data Registry...")
+        data_registry.copy_dataset_to_local(registered_dataset_path, local_dataset_dir)        
 
-    logger.log_token_buffer_loading(f"Loading token memmaps from {cfg.local_train_mmap_path.parent}...")
-    train_tokens_buffer = np.memmap(cfg.local_train_mmap_path, mode="r", dtype=dtype)
-    eval_tokens_buffer = np.memmap(cfg.local_eval_mmap_path, mode="r", dtype=dtype)
-
-    # --- STEP 4: Create deterministic train schedule (token-budget driven) ---
-    # Train DS: deterministic random windows, with global sample index offset for resume
-    logger.log_dataloader_info("Creating deterministic training dataset with random windows...")
-    deterministic_train_ds = DeterministicTokenWindows(
-        tokens_mmap_buffer=train_tokens_buffer,
-        seq_len=cfg.seq_len,
-        seed=cfg.seed,
+    # Load dataset info from Data Registry
+    dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
+    dtype = np.dtype(dataset_info.dtype)
+    
+    # STEP 4: Create dataloaders
+    logger.log_dataloader_info(
+        "Creating deterministic training dataset with random windows "
+        "and sequential evaluation dataset with non-overlapping chunks..."
     )
-    train_ds = OffsetDataset(deterministic_train_ds, offset_start=cfg.start_sample_idx)
-
-    # Eval DS: sequential non-overlapping chunks
-    logger.log_dataloader_info("Creating sequential evaluation dataset with non-overlapping chunks...")
-    eval_ds = SequentialTokenChunks(eval_tokens_buffer, seq_len=cfg.seq_len)
-
-    # --- STEP 5: Create PyTorch dataloaders ---
-    dl_kwargs = dict(
-        shuffle=False,  # windows are already deterministic/randomized
-        num_workers=cfg.num_workers, 
-        pin_memory=True,
-        drop_last=False,
+    dls = make_dataloaders(
+        local_train_mmap_path=local_train_mmap_path,
+        local_eval_mmap_path=local_eval_mmap_path,
+        dtype=dtype,
+        dataloader_config=dataloader_config
     )
-    train_dl = DataLoader(train_ds, batch_size=cfg.train_batch_size, **dl_kwargs)
-    eval_dl = DataLoader(eval_ds, batch_size=cfg.eval_batch_size, **dl_kwargs)
 
-    logger.log_dataloader_info(f"Prepared dataloaders with {len(train_ds)} training samples and {len(eval_ds)} evaluation samples.")
+    # TODO: improve logs
+    logger.log_dataloader_info(
+        f"Prepared dataloaders with {len(dls['train'])} training batches and {len(dls['eval'])} evaluation batches."
+    )
 
-    info = {
-        "vocab_size": vocab_size,
-        "eos_id": eos_id,
-        # "total_train_tokens": total_train_tokens,
-        # "total_eval_tokens": total_eval_tokens,
-    }
+    output_info = dict(**asdict(dataset_info), **asdict(dataloader_config))
+
     return {
-        "train": train_dl, 
-        "eval": eval_dl, 
-        "info": info
+        **dls,
+        "info": output_info,
     }
+
+
+

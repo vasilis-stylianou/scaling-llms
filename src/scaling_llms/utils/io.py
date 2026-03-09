@@ -1,9 +1,10 @@
-
 from dataclasses import asdict, is_dataclass
 import json
 import os
 from pathlib import Path
 from typing import Any, Literal
+
+import numpy as np
 
 from scaling_llms.utils.config import BaseJsonConfig
 
@@ -17,6 +18,9 @@ def _json_default(o: Any):
         return str(o)
     if isinstance(o, set):
         return list(o)
+    if isinstance(o, np.dtype):
+        return {"__type__": "np.dtype", "name": o.name}
+
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 
@@ -54,8 +58,8 @@ def _get_figure_backend(fig: Any) -> Literal["plotly", "matplotlib"]:
         pass
 
     try:
-        from matplotlib.figure import Figure
         from matplotlib.axes import Axes
+        from matplotlib.figure import Figure
 
         if isinstance(fig, Figure) or isinstance(fig, Axes):
             return "matplotlib"
@@ -86,3 +90,25 @@ def log_as_html(fig: Any, path: str | Path) -> Path:
         fig.write_html(str(path))
         return path
     raise ValueError(f"Unsupported figure backend: {backend}")
+
+
+def _json_object_hook(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        if obj.get("__type__") == "np.dtype":
+            return np.dtype(obj["name"])
+
+        return {k: _json_object_hook(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [_json_object_hook(v) for v in obj]
+
+    return obj
+
+
+def read_json(path: str | Path) -> dict[str, Any]:
+    path = Path(path)
+
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    return _json_object_hook(data)

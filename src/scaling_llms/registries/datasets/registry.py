@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -10,8 +12,9 @@ from scaling_llms.registries.core.db import RegistryDB
 from scaling_llms.registries.core.helpers import get_next_id, get_local_iso_timestamp
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.schema import TABLE_SPECS
-from scaling_llms.registries.datasets.artifacts import DatasetArtifacts
+from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, TokenizedDatasetInfo
 from scaling_llms.storage.base import RegistryStorage
+from scaling_llms.utils.io import log_as_json
 
 
 class DataRegistry(RegistryDB):
@@ -113,12 +116,25 @@ class DataRegistry(RegistryDB):
     def dataset_exists(self, identity: DatasetIdentity) -> bool:
         path = self.find_dataset_path(identity, raise_if_not_found=False)
         return (path is not None) and path.exists()
+    
+    def get_dataset_info(self, identity: DatasetIdentity) -> dict[str, Any] | None:
+        path = self.find_dataset_path(identity, raise_if_not_found=False)
+        if path is None:
+            return None
+
+        artifacts = DatasetArtifacts(path) 
+        dataset_info_path = artifacts.dataset_info
+        if not dataset_info_path.exists():
+            return None
+ 
+        return TokenizedDatasetInfo.from_json(dataset_info_path)
 
     def register_dataset(
         self,
         src_path_train_bin: str | Path,
         src_path_eval_bin: str | Path,
         identity: DatasetIdentity,
+        dataset_info: TokenizedDatasetInfo | None = None,
         **kwargs,
     ) -> Path:
         if self.dataset_exists(identity):
@@ -137,8 +153,12 @@ class DataRegistry(RegistryDB):
         dst = DatasetArtifacts(dataset_dir)
         dst.ensure_dir()
 
+        # Copy files to dataset dir
         shutil.copy2(src_train, dst.train_bin)
         shutil.copy2(src_eval, dst.eval_bin)
+
+        if dataset_info is not None:
+            log_as_json(dataset_info, dst.dataset_info)
 
         params = {
             **identity.as_kwargs(),

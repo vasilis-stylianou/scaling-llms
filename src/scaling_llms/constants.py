@@ -61,7 +61,8 @@ class CheckpointFileNames:
 @dataclass(frozen=True)
 class MetadataFileNames:
     trainer_config: str = "trainer_configs.json"
-    data_config: str = "data_configs.json"
+    dataset_id: str = "dataset_id.json"
+    dataloader_config: str = "dataloader_configs.json"
     model_config: str = "model_configs.json"
     model_class: str = "model_class.json"
     train_log: str = "train.log"
@@ -70,7 +71,8 @@ class MetadataFileNames:
     def as_list(self) -> list[str]:
         return [
             self.trainer_config,
-            self.data_config,
+            self.dataset_id,
+            self.dataloader_config,
             self.model_config,
             self.model_class,
             self.train_log,
@@ -86,6 +88,7 @@ class MetadataFileNames:
 class DataFileNames:
     train_tokens: str = "train.bin"
     eval_tokens: str = "eval.bin"
+    dataset_info: str = "dataset_info.json"
 
 
 # -------------------------

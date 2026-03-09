@@ -33,9 +33,9 @@ from scaling_llms.utils.training import (
 # -------------------------
 @dataclass
 class TrainerConfig(BaseJsonConfig):
-
+    
     # Optimization
-    num_steps: int | None = None
+    num_steps: int
     lr: float = 3e-4
     beta1: float = 0.9
     beta2: float = 0.95
@@ -45,14 +45,7 @@ class TrainerConfig(BaseJsonConfig):
     grad_clip_norm: float | None = 1.0
     device: str = "auto"  # "auto" | "cpu" | "cuda"
 
-    # Training Budget (optional; alternative to num_steps, used to derive num_steps based on tokens/step)
-    # NOTE: all three must be provided if num_steps is None
-    # FORMULA: num_steps = ceil(train_tokens_budget / (micro_batch_size * seq_len * accum_steps)) 
-    train_tokens_budget: int | None = None
-    micro_batch_size: int | None = None  # single GPU
-    seq_len: int | None = None
-
-    # DataLoader
+    # Dataloader 
     iter_mode: Literal["infinite", "single-batch"] = "infinite"
 
     # LR Scheduler

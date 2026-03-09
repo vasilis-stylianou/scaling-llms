@@ -6,7 +6,7 @@ from typing import Any, Iterable
 from scaling_llms.constants import METRIC_CATS
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.utils.loggers import BaseLogger
-from scaling_llms.tracking.helpers import (
+from scaling_llms.utils.io import (
     log_as_json, 
     log_as_html, 
     log_as_png

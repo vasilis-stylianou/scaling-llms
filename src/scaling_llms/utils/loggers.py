@@ -340,19 +340,19 @@ class DataLogger(BaseLogger):
 
         self.info("[dataset info] " + " | ".join(parts))
 
-    def log_batch_info(
-        self,
-        *,
-        vocab_size: int,
-        seq_len: int,
-        train_batch_size: int,
-        eval_batch_size: int,
-        dtype: str,
-    ) -> None:
-        self.info(
-            "[batch info] vocab_size=%d | seq_len=%d | train_batch_size=%d | eval_batch_size=%d | dtype=%s",
-            vocab_size, seq_len, train_batch_size, eval_batch_size, dtype
-        )
+    # def log_batch_info(
+    #     self,
+    #     *,
+    #     vocab_size: int,
+    #     seq_len: int,
+    #     train_batch_size: int,
+    #     eval_batch_size: int,
+    #     dtype: str,
+    # ) -> None:
+    #     self.info(
+    #         "[batch info] vocab_size=%d | seq_len=%d | train_batch_size=%d | eval_batch_size=%d | dtype=%s",
+    #         vocab_size, seq_len, train_batch_size, eval_batch_size, dtype
+    #     )
 
     def log_dataset_loading(self, msg: str) -> None:
         self.info("[hf dataset loading] %s", msg)

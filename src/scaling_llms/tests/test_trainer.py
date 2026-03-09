@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.models import GPTModel, GPTConfig
 from scaling_llms.registries.runs.artifacts import RunArtifacts
-from scaling_llms.tracking.helpers import log_as_json
+from scaling_llms.utils.io import log_as_json
 from scaling_llms.tracking.run import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
 

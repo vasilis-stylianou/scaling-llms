@@ -11,6 +11,7 @@ from scaling_llms.constants import (
     TOKENIZED_CACHE_DIR_NAME,
 )
 from scaling_llms.models import GPTConfig, GPTModel
+from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, TokenizedDatasetInfo
 from scaling_llms.registries.datasets.identity import DATASET_IDENTITY_COLS, DatasetIdentity
 from scaling_llms.registries.datasets.schema import DATASETS_TABLE
 from scaling_llms.registries.runs.registry import RunRegistry
@@ -65,37 +66,6 @@ def local_tokenized_cache_dir(tmp_path: Path):
     path = tmp_path / TOKENIZED_CACHE_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-# @pytest.fixture(autouse=True)
-# def clean_registries_and_cache(
-#     run_registry, data_registry, local_tokenized_cache_dir
-# ):
-#     def _clean():
-#         # Clean up datasets
-#         df = data_registry.get_datasets_as_df()
-#         for _, row in df.iterrows():
-#             data_registry.delete_dataset(
-#                 dataset_path=row.dataset_path, confirm=False
-#             )
-#         for item in local_tokenized_cache_dir.iterdir():
-#             if item.is_dir():
-#                 shutil.rmtree(item, ignore_errors=True)
-#             else:
-#                 item.unlink(missing_ok=True)
-
-#         # Clean up  experiments
-#         df_runs = run_registry.get_runs_as_df().query(f"experiment_name == '{EXPERIMENT_NAME}'")
-#         for _, row in df_runs.iterrows():
-#             run_registry.delete_experiment(row.experiment_name, confirm=False)
-
-#     # Clean up before each unit test
-#     _clean()
-
-#     yield
-
-#     # Clean up after each unit test
-#     _clean()
 
 
 # ============================================================
@@ -322,6 +292,81 @@ def test_data_registry_register_find_copy_delete(
     df_datasets = data_registry.get_datasets_as_df()
     assert len(df_datasets) == 0, f"Expected 0 datasets after deletion, found {len(df_datasets)}"
     assert not dataset_path.exists(), f"Dataset path should not exist after deletion: {dataset_path}"
+
+
+def test_data_registry_dataset_info(data_registry, local_tokenized_cache_dir):
+    """
+    register_dataset with a TokenizedDatasetInfo should persist a JSON file
+    in the dataset artifacts directory, and get_dataset_info should return
+    the same data back.
+    """
+    ident = DatasetIdentity(
+        dataset_name="dataset_info_test",
+        dataset_config=None,
+        train_split="train",
+        eval_split="test",
+        tokenizer_name="gpt2_tiktoken",
+        text_field="text",
+    )
+
+    # Create dummy tokenized dataset files
+    local_dataset_dir = local_tokenized_cache_dir / "info_test"
+    local_dataset_dir.mkdir(parents=True, exist_ok=True)
+    local_train_mmap = local_dataset_dir / DATA_FILES.train_tokens
+    local_eval_mmap = local_dataset_dir / DATA_FILES.eval_tokens
+
+    n_tokens = 512
+    local_train_mmap.write_bytes(
+        np.random.randint(0, 50000, size=n_tokens, dtype=np.uint16).tobytes()
+    )
+    local_eval_mmap.write_bytes(
+        np.random.randint(0, 50000, size=n_tokens, dtype=np.uint16).tobytes()
+    )
+
+    dataset_info = TokenizedDatasetInfo(
+        vocab_size=50257,
+        eos_id=50256,
+        dtype="uint16",
+        total_train_tokens=n_tokens,
+        total_eval_tokens=n_tokens,
+    )
+
+    # Register with dataset_info
+    dataset_path = data_registry.register_dataset(
+        local_train_mmap,
+        local_eval_mmap,
+        ident,
+        dataset_info=dataset_info,
+    )
+
+    # The JSON file should exist inside the registered artifact directory
+    artifacts = DatasetArtifacts(dataset_path)
+    assert artifacts.dataset_info.exists(), (
+        f"Expected dataset_info JSON at {artifacts.dataset_info} but it does not exist."
+    )
+
+    # get_dataset_info should return a TokenizedDatasetInfo matching the original
+    loaded_info = data_registry.get_dataset_info(ident)
+    assert loaded_info is not None, "get_dataset_info returned None for a registered dataset."
+    assert isinstance(loaded_info, TokenizedDatasetInfo), (
+        f"Expected TokenizedDatasetInfo, got {type(loaded_info)}"
+    )
+    assert loaded_info == dataset_info, (
+        f"Loaded dataset info does not match original: {loaded_info} != {dataset_info}"
+    )
+
+    # get_dataset_info for an unknown identity should return None
+    unknown_ident = DatasetIdentity(
+        dataset_name="nonexistent",
+        dataset_config=None,
+        train_split="train",
+        eval_split="test",
+        tokenizer_name="gpt2_tiktoken",
+        text_field="text",
+    )
+    assert data_registry.get_dataset_info(unknown_ident) is None, (
+        "get_dataset_info should return None for an unregistered dataset."
+    )
 
 
 # ============================================================
