@@ -121,6 +121,7 @@ class ExperimentRunner:
             dl_cfg = DataLoaderConfig(**dataloader_kwargs)
 
             new_run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+            new_run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
             dl_dict = get_dataloaders(
                 dataset_id=dataset_id,
                 data_registry=self.data_registry,
@@ -136,17 +137,17 @@ class ExperimentRunner:
                 overwrite=False,
             ) as old_run:
                 # Validate sequence length matches between old and new runs
-                old_data_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(METADATA_FILES.dataset_id).read_text()
+                old_dl_kwargs = json.loads(
+                    old_run.artifacts.metadata_path(METADATA_FILES.dataloader_config).read_text()
                 )  
                 
-                if old_data_kwargs["seq_len"] != dataloader_kwargs["seq_len"]:
+                if old_dl_kwargs["seq_len"] != dataloader_kwargs["seq_len"]:
                     self.delete_run(
                         run_name=run_name,
                         confirm=False
                     )  # Clean up new run since it won't be usable
                     raise ValueError(
-                        f"Sequence length mismatch between old run ({old_data_kwargs['seq_len']}) and new run ({dataloader_kwargs['seq_len']}). "
+                        f"Sequence length mismatch between old run ({old_dl_kwargs['seq_len']}) and new run ({dataloader_kwargs['seq_len']}). "
                         "Checkpoint loading may fail."
                     )
 

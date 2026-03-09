@@ -26,6 +26,7 @@ from scaling_llms.registries.datasets.artifacts import TokenizedDatasetInfo
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
 from scaling_llms.tracking.run import Run
+from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger
 
 
@@ -429,7 +430,7 @@ def make_tokenized_dataset(
 # DATALOADER FACTORY
 # ============================================================
 @dataclass(frozen=True)
-class DataLoaderConfig:
+class DataLoaderConfig(BaseJsonConfig):
     seq_len: int
     train_batch_size: int
     eval_batch_size: int

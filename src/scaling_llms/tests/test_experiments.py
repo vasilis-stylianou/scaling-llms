@@ -2,6 +2,7 @@ import pytest
 
 from scaling_llms.experiments import ExperimentRunner
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
+from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.trainer import Trainer
 
 
@@ -9,20 +10,28 @@ EXPERIMENT_NAME = "test_experiment_runner"
 RUN_NAME = "run_test"
 
 @pytest.fixture(autouse=True)
-def cleanup_experiments():
+def cleanup_experiments(dataset_kwargs):
     exp = ExperimentRunner(EXPERIMENT_NAME, is_dev=True)
     try:
         exp.delete_experiment(confirm=False)
     except Exception:
-        pass  # If experiment doesn't exist, ignore the error
+        pass
 
-    yield  # Run the test
+    # Delete stale test dataset from data registry so it gets
+    # re-registered with the current schema (incl. dataset_info.json)
+    try:
+        dataset_id = DatasetIdentity(**dataset_kwargs)
+        exp.data_registry.delete_dataset(identity=dataset_id, confirm=False)
+    except Exception:
+        pass
+
+    yield
 
     # Cleanup after test
     try:
         exp.delete_experiment(confirm=False)
     except Exception:
-        pass  # If experiment doesn't exist, ignore the error
+        pass
 
 
 @pytest.fixture
