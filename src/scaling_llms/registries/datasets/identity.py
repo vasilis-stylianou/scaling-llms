@@ -1,6 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
+from scaling_llms.utils.config import BaseJsonConfig
+
 DATASET_IDENTITY_COLS = (
     "dataset_name",
     "dataset_config",
@@ -11,7 +13,7 @@ DATASET_IDENTITY_COLS = (
 )
 
 @dataclass(frozen=True)
-class DatasetIdentity:
+class DatasetIdentity(BaseJsonConfig):
     dataset_name: str
     dataset_config: str | None
     train_split: str

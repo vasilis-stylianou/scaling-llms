@@ -44,7 +44,7 @@ class MetricCategories:
 
 
 # --------------------------
-# CKPT & METADATA FILE NAMES
+# RUN ARTIFACTS FILE NAMES (CKPT & METADATA)
 # --------------------------
 @dataclass(frozen=True)
 class CheckpointFileNames:
@@ -81,9 +81,8 @@ class MetadataFileNames:
 
 
 # --------------------------
-# DATA FILE NAMES
+# DATA ARTIFACTS FILE NAMES
 # --------------------------
-# TODO
 @dataclass(frozen=True)
 class DataFileNames:
     train_tokens: str = "train.bin"
