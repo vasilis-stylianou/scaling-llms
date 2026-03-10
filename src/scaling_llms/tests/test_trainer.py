@@ -208,7 +208,6 @@ def test_trainer_config_json_roundtrip(tmp_path):
         eval_log_freq=100,
         ckpt_log_freq=200,
         enable_cuda_timer=True,
-        seed=42,
     )
     
     # Save to JSON
