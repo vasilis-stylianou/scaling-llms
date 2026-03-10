@@ -19,6 +19,4 @@ __pycache__/
 
 # Dirs to ignore
 data/
-runs/
-
 
