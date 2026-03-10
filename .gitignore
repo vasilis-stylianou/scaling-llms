@@ -15,8 +15,4 @@ __pycache__/
 .vscode/
 
 # PyTest
-.pytest_cache/
-
-# Dirs to ignore
-data/
-
+.pytest_cache/statu
