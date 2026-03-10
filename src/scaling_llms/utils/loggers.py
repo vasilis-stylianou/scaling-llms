@@ -324,44 +324,43 @@ class DataLogger(BaseLogger):
     - WARNING: fallback paths, partial cache, mismatched tokenizer/vocab metadata
     """
 
-    def log_start(self, cfg) -> None:
-        if cfg.start_sample_idx > 0:
-            self.info("Resuming Data Loading from sample_idx=%d", cfg.start_sample_idx)
-        else:
-            self.info("Starting Data Loading")
+    def log_dataset_id(self, dataset_id) -> None:
+        parts = [f"name={dataset_id.dataset_name}"]
+        if dataset_id.dataset_config is not None:
+            parts.append(f"config={dataset_id.dataset_config}")
+        if dataset_id.train_split is not None:
+            parts.append(f"train_split={dataset_id.train_split}")
+        if dataset_id.eval_split is not None:
+            parts.append(f"eval_split={dataset_id.eval_split}")
+        if dataset_id.tokenizer_name is not None:
+            parts.append(f"tokenizer={dataset_id.tokenizer_name}")
+        if dataset_id.text_field is not None:
+            parts.append(f"text_field={dataset_id.text_field}")
 
-        parts = [f"name={cfg.dataset_name}"]
-        if cfg.dataset_config is not None:
-            parts.append(f"config={cfg.dataset_config}")
-        if cfg.train_split is not None:
-            parts.append(f"train_split={cfg.train_split}")
-        if cfg.eval_split is not None:
-            parts.append(f"eval_split={cfg.eval_split}")
+        self.info("[dataset identity] " + " | ".join(parts))
 
-        self.info("[dataset info] " + " | ".join(parts))
-
-    # def log_batch_info(
-    #     self,
-    #     *,
-    #     vocab_size: int,
-    #     seq_len: int,
-    #     train_batch_size: int,
-    #     eval_batch_size: int,
-    #     dtype: str,
-    # ) -> None:
-    #     self.info(
-    #         "[batch info] vocab_size=%d | seq_len=%d | train_batch_size=%d | eval_batch_size=%d | dtype=%s",
-    #         vocab_size, seq_len, train_batch_size, eval_batch_size, dtype
-    #     )
-
-    def log_dataset_loading(self, msg: str) -> None:
-        self.info("[hf dataset loading] %s", msg)
+    def log_dataloader_config(self, dataloader_config) -> None:
+        parts = [
+            f"seq_len={dataloader_config.seq_len}",
+            f"train_batch_size={dataloader_config.train_batch_size}", 
+            f"eval_batch_size={dataloader_config.eval_batch_size}",
+            f"start_sample_idx={dataloader_config.start_sample_idx}",
+        ]
+        self.info("[dataloader config] " + " | ".join(parts))
 
     def log_tokenization(self, msg: str) -> None:
         self.info("[tokenization] %s", msg)
 
-    def log_token_buffer_loading(self, msg: str) -> None:
-        self.info("[token buffer loading] %s", msg)
+    def log_dataset_info(self, dataset_info) -> None:
+        self.info(
+            "[dataset info] vocab_size=%d | eos_id=%d | dtype=%s | total_train_tokens=%d | total_eval_tokens=%d",
+            dataset_info.vocab_size,
+            dataset_info.eos_id,
+            dataset_info.dtype,
+            dataset_info.total_train_tokens,
+            dataset_info.total_eval_tokens,
+        )
 
-    def log_dataloader_info(self, msg: str) -> None:
+    def log_dataloader_creation(self, msg: str) -> None:
         self.info("[dataloader] %s", msg)
+

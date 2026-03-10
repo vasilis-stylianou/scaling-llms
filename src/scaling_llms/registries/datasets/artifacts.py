@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from scaling_llms.constants import DATA_FILES
+from scaling_llms.constants import DATASET_FILES
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import BaseLogger
 
@@ -28,15 +28,15 @@ class DatasetArtifacts:
 
     @property
     def train_bin(self) -> Path:
-        return self.root / DATA_FILES.train_tokens
+        return self.root / DATASET_FILES.train_tokens
 
     @property
     def eval_bin(self) -> Path:
-        return self.root / DATA_FILES.eval_tokens
+        return self.root / DATASET_FILES.eval_tokens
     
     @property
     def dataset_info(self) -> Path:
-        return self.root / DATA_FILES.dataset_info
+        return self.root / DATASET_FILES.dataset_info
 
     def ensure_dir(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

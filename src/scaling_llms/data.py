@@ -15,7 +15,7 @@ import shutil
 from torch.utils.data import DataLoader, Dataset
 
 from scaling_llms.constants import (
-    DATA_FILES,
+    DATASET_FILES,
     LOCAL_DATA_DIR,
     HF_CACHE_DIR_NAME,
     MAX_CACHE_GB,
@@ -174,10 +174,12 @@ def build_memmap_tokens(
     print(f"Token memmap not found at {token_mmap_path}, building now...")
 
     # Pass 1: count tokens to pre-allocate memmap (append EOS token if requested)
+    is_valid_text = lambda t: (t is not None) and bool(t.strip())  # noqa: E731
+
     total_tokens = 0
     for text in texts:
         # Skip empty or whitespace-only texts to avoid unnecessary tokens
-        if (text is None) or (not text.strip()):
+        if not is_valid_text(text):
             continue
         total_tokens += len(encode_fn(text))
         if append_eos:
@@ -190,7 +192,7 @@ def build_memmap_tokens(
         arr = np.memmap(tmp_path, mode="w+", dtype=dtype, shape=(total_tokens,))
         write_index = 0
         for text in texts:
-            if (text is None) or (not text.strip()):
+            if not is_valid_text(text):
                 continue
             ids = encode_fn(text)
             n = len(ids)
@@ -516,10 +518,10 @@ class LocalDataPaths:
         return self.tokenized_cache_dir / dataset_id.slug()
 
     def train_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
-        return self.dataset_dir(dataset_id) / DATA_FILES.train_tokens
+        return self.dataset_dir(dataset_id) / DATASET_FILES.train_tokens
 
     def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
-        return self.dataset_dir(dataset_id) / DATA_FILES.eval_tokens
+        return self.dataset_dir(dataset_id) / DATASET_FILES.eval_tokens
     
 
 def get_dataloaders(
@@ -538,7 +540,8 @@ def get_dataloaders(
         level=logging.INFO,
     )
 
-    # logger.log_token_buffer_loading(f"Loading token memmaps from {local_train_mmap_path.parent}...")
+    logger.log_dataset_id(dataset_id)
+    logger.log_dataloader_config(dataloader_config)    
 
     # STEP 1: Prepare local paths for token memmaps 
     # NOTE: these are the source for dataloader creation and also used for registry registration, 
@@ -551,10 +554,10 @@ def get_dataloaders(
 
     # STEP 2: Create tokenized dataset and register in Data Registry if not already present
     if data_registry.dataset_exists(dataset_id):
-        logger.log_dataset_loading("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
+        logger.log_tokenization("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
         registered_dataset_path = data_registry.find_dataset_path(dataset_id, raise_if_not_found=True)
     else:
-        logger.log_dataset_loading("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
+        logger.log_tokenization("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
         registered_dataset_path = make_tokenized_dataset(
             dataset_id=dataset_id,
             data_registry=data_registry,
@@ -566,17 +569,18 @@ def get_dataloaders(
 
     # STEP 3: Ensure local memmaps are available for dataloader creation
     if local_train_mmap_path.exists() and local_eval_mmap_path.exists():
-        logger.log_dataset_loading("Memmaps already exist locally, skipping copy from Data Registry.")
+        logger.log_tokenization("Memmaps already exist locally, skipping copy from Data Registry.")
     else: 
-        logger.log_dataset_loading("Memmaps not found locally, copying locally from Data Registry...")
+        logger.log_tokenization("Memmaps not found locally, copying locally from Data Registry...")
         data_registry.copy_dataset_to_local(registered_dataset_path, local_dataset_dir)        
 
     # Load dataset info from Data Registry
     dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
     dtype = np.dtype(dataset_info.dtype)
+    logger.log_dataset_info(dataset_info)
     
     # STEP 4: Create dataloaders
-    logger.log_dataloader_info(
+    logger.log_dataloader_creation(
         "Creating deterministic training dataset with random windows "
         "and sequential evaluation dataset with non-overlapping chunks..."
     )
@@ -587,15 +591,17 @@ def get_dataloaders(
         dataloader_config=dataloader_config
     )
 
-    # TODO: improve logs
-    logger.log_dataloader_info(
-        f"Prepared dataloaders with {len(dls['train'])} training batches and {len(dls['eval'])} evaluation batches."
+    logger.log_dataloader_creation(
+        f"Prepared dataloaders with {len(dls['train'])} training batches and "
+        f"{len(dls['eval'])} evaluation batches."
     )
 
+    # STEP 5: Prepare output info
     output_info = dict(**asdict(dataset_info), **asdict(dataloader_config))
 
     return {
-        **dls,
+        "train": dls["train"],
+        "eval": dls["eval"],
         "info": output_info,
     }
 

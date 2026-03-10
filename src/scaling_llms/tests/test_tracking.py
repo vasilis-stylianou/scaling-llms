@@ -6,7 +6,7 @@ import torch
 from pathlib import Path
 
 from scaling_llms.constants import (
-    DATA_FILES,
+    DATASET_FILES,
     METRIC_CATS,
     TOKENIZED_CACHE_DIR_NAME,
 )
@@ -243,8 +243,8 @@ def test_data_registry_register_find_copy_delete(
     # Create dummy tokenized dataset files in the local tokenized cache dir
     local_dataset_dir = local_tokenized_cache_dir / "test"
     local_dataset_dir.mkdir(parents=True, exist_ok=True)
-    local_train_mmap_path = local_dataset_dir / DATA_FILES.train_tokens
-    local_eval_mmap_path = local_dataset_dir / DATA_FILES.eval_tokens
+    local_train_mmap_path = local_dataset_dir / DATASET_FILES.train_tokens
+    local_eval_mmap_path = local_dataset_dir / DATASET_FILES.eval_tokens
 
     n_tokens = 1024
     train = np.random.randint(0, 50000, size=n_tokens, dtype=np.uint32)
@@ -312,8 +312,8 @@ def test_data_registry_dataset_info(data_registry, local_tokenized_cache_dir):
     # Create dummy tokenized dataset files
     local_dataset_dir = local_tokenized_cache_dir / "info_test"
     local_dataset_dir.mkdir(parents=True, exist_ok=True)
-    local_train_mmap = local_dataset_dir / DATA_FILES.train_tokens
-    local_eval_mmap = local_dataset_dir / DATA_FILES.eval_tokens
+    local_train_mmap = local_dataset_dir / DATASET_FILES.train_tokens
+    local_eval_mmap = local_dataset_dir / DATASET_FILES.eval_tokens
 
     n_tokens = 512
     local_train_mmap.write_bytes(

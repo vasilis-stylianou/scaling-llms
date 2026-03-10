@@ -84,7 +84,7 @@ class MetadataFileNames:
 # DATA ARTIFACTS FILE NAMES
 # --------------------------
 @dataclass(frozen=True)
-class DataFileNames:
+class DatasetFileNames:
     train_tokens: str = "train.bin"
     eval_tokens: str = "eval.bin"
     dataset_info: str = "dataset_info.json"
@@ -94,6 +94,6 @@ class DataFileNames:
 # INSTANTIATE SINGLETONS
 # -------------------------
 METRIC_CATS = MetricCategories() 
-DATA_FILES = DataFileNames()
+DATASET_FILES = DatasetFileNames()
 CKPT_FILES = CheckpointFileNames()
 METADATA_FILES = MetadataFileNames()

@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from scaling_llms.constants import DATA_FILES
+from scaling_llms.constants import DATASET_FILES
 from scaling_llms.registries.core.db import RegistryDB
 from scaling_llms.registries.core.helpers import get_next_id, get_local_iso_timestamp
 from scaling_llms.registries.datasets.identity import DatasetIdentity
@@ -78,8 +78,8 @@ class DataRegistry(RegistryDB):
         dst_dir = Path(local_path).expanduser().resolve()
         dst_dir.mkdir(parents=True, exist_ok=True)
 
-        train_dst = dst_dir / DATA_FILES.train_tokens
-        eval_dst = dst_dir / DATA_FILES.eval_tokens
+        train_dst = dst_dir / DATASET_FILES.train_tokens
+        eval_dst = dst_dir / DATASET_FILES.eval_tokens
 
         if train_dst.exists() and not overwrite:
             raise FileExistsError(f"Destination already exists: {train_dst}")

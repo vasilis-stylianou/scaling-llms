@@ -63,9 +63,6 @@ class TrainerConfig(BaseJsonConfig):
 
     # Timer
     enable_cuda_timer: bool = False
-
-    # Reproducibility
-    seed: int = 1234
     
     # --- FACTORIES ---
     @classmethod
