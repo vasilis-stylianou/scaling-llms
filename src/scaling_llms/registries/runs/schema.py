@@ -21,6 +21,7 @@ RUNS_TABLE = TableSpec(
         ColumnSpec("status_msg", "TEXT", nullable=True, default_sql="NULL"),
 
         # Metadata fields (Optional)
+        ColumnSpec("git_commit", "TEXT", nullable=True, default_sql="NULL"),
         ColumnSpec("other_data", "TEXT", nullable=True, default_sql="NULL"),
 
     ],

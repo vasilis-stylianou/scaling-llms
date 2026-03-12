@@ -1,53 +1,57 @@
-import os
+from __future__ import annotations
+
+import argparse
+import importlib.util
 from pathlib import Path
-import subprocess
-import sys
+import urllib.request
 
-def _in_colab() -> bool:
-    # Best-effort Colab detection
-    return (
-        ("COLAB_GPU" in os.environ)
-        or ("COLAB_TPU_ADDR" in os.environ)
-        or ("google.colab" in sys.modules)
+
+ENV_SETUP_URL = "https://raw.githubusercontent.com/vasilis-stylianou/scaling-llms/refs/heads/main/scripts/env_setup.py?cachebust=1"
+LOCAL_ENV_SETUP_PATH = Path("./env_setup.py")
+
+def _ensure_local_env_setup_file() -> Path:
+    if LOCAL_ENV_SETUP_PATH.exists():
+        return LOCAL_ENV_SETUP_PATH
+
+    print(f"Downloading env setup helper from {ENV_SETUP_URL}")
+    urllib.request.urlretrieve(ENV_SETUP_URL, LOCAL_ENV_SETUP_PATH)
+    return LOCAL_ENV_SETUP_PATH
+
+
+def _load_setup_env_for_git_commit():
+    env_setup_path = _ensure_local_env_setup_file()
+    spec = importlib.util.spec_from_file_location("env_setup", env_setup_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module spec from {env_setup_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    setup_fn = getattr(module, "setup_env_for_git_commit", None)
+    if setup_fn is None:
+        raise RuntimeError("env_setup.py does not expose setup_env_for_git_commit")
+    return setup_fn
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Thin Colab bootstrap that delegates to env_setup.setup_env_for_git_commit."
     )
+    parser.add_argument(
+        "--git-commit",
+        dest="git_commit",
+        type=str,
+        default=None,
+        help="Git commit SHA to checkout. If omitted, latest commit on main is used.",
+    )
+    return parser.parse_args()
 
-script_dir = Path.cwd()
 
-if _in_colab():
-    os.environ["SCALING_LLMS_ENV"] = "colab"
-    print("Working Environment: colab")
+def main() -> None:
+    args = _parse_args()
+    setup_fn = _load_setup_env_for_git_commit()
+    setup_fn(args.git_commit)
 
-    REPO_URL = "https://github.com/vasilis-stylianou/scaling-llms.git"
-    REPO_DIR = Path("/content/scaling-llms")
 
-    if not REPO_DIR.exists():
-        print(f"Cloning {REPO_URL} -> {REPO_DIR}")
-        subprocess.run(["git", "clone", "--depth", "1", REPO_URL, str(REPO_DIR)], check=True)
-
-    os.chdir(REPO_DIR)
-    print("CWD:", Path.cwd())
-
-    # Make imports work immediately (no kernel restart)
-    src_path = str(REPO_DIR / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-    print(f"Added {src_path} to sys.path")
-    print("Repo ready; imports should work without restarting the kernel.")
-    
-else:
-    os.environ["SCALING_LLMS_ENV"] = "local"
-    print("Working Environment: local")
-    try:
-        from IPython import get_ipython # type: ignore
-
-        ip = get_ipython()
-        if ip:
-            ip.run_line_magic("load_ext", "autoreload")
-            ip.run_line_magic("autoreload", "2")
-            print("Enabled autoreload")
-    except Exception:  # type: ignore
-        pass
-    print("Not in Colab, skipping setup")
-
-# Delete the setup script after running 
-(script_dir / os.path.basename(__file__)).unlink()
+if __name__ == "__main__":
+    main()

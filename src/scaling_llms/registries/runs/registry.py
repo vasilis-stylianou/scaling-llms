@@ -7,7 +7,11 @@ from pathlib import Path
 import pandas as pd
 
 from scaling_llms.registries.core.db import RegistryDB
-from scaling_llms.registries.core.helpers import get_next_id, get_local_iso_timestamp
+from scaling_llms.registries.core.helpers import (
+    get_current_git_commit_sha,
+    get_next_id,
+    get_local_iso_timestamp,
+)
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.registries.runs.identity import RunIdentity
 from scaling_llms.registries.runs.schema import TABLE_SPECS
@@ -142,6 +146,19 @@ class RunRegistry(RegistryDB):
         )
         return row is not None
 
+    def get_git_commit(self, identity: RunIdentity) -> str | None:
+        row = self.fetchone(
+            f"SELECT git_commit FROM runs WHERE {self._identity_where(identity)}",
+            identity.as_kwargs(),
+        )
+        if row is None:
+            raise FileNotFoundError(f"Run not found: {identity}")
+        commit = row[0]
+        if commit is None:
+            return None
+        commit_str = str(commit).strip()
+        return commit_str or None
+
     def set_status(self, identity: RunIdentity, status: RunStatus) -> None:
         if not self.run_exists(identity):
             raise FileNotFoundError(f"Run not found: {identity}")
@@ -191,6 +208,7 @@ class RunRegistry(RegistryDB):
             "created_at": created_at,
             "updated_at": updated_at,
             "status": RunStatus.CREATED.value,
+            "git_commit": get_current_git_commit_sha(),
         }
         conflict_cols = ", ".join(identity.as_kwargs())
         cols = ", ".join(params)

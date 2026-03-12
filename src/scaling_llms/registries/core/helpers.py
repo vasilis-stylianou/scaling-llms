@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import subprocess
 from zoneinfo import ZoneInfo
 from scaling_llms.constants import LOCAL_TIMEZONE
 
@@ -17,3 +18,17 @@ def get_next_id(prefix: str, parent_dir: Path) -> int:
 
 def get_local_iso_timestamp() -> str:
     return datetime.now(ZoneInfo(LOCAL_TIMEZONE)).isoformat()
+
+
+def get_current_git_commit_sha() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit = result.stdout.strip()
+        return commit or None
+    except Exception:
+        return None

@@ -151,6 +151,43 @@ def test_run_registry_resume(run_registry):
     )
 
 
+def test_run_registry_logs_git_commit(run_registry, monkeypatch):
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
+    fake_commit = "abc123def456"
+
+    monkeypatch.setattr(
+        "scaling_llms.registries.runs.registry.get_current_git_commit_sha",
+        lambda: fake_commit,
+    )
+
+    _ = run_registry.create_run(RunIdentity(exp_name, run_name))
+    row = run_registry.get_runs_as_df().iloc[0]
+
+    assert row.git_commit == fake_commit
+
+
+def test_run_registry_get_git_commit(run_registry, monkeypatch):
+    exp_name = EXPERIMENT_NAME
+    run_name = RUN_NAME
+    fake_commit = "deadbeef"
+
+    monkeypatch.setattr(
+        "scaling_llms.registries.runs.registry.get_current_git_commit_sha",
+        lambda: fake_commit,
+    )
+
+    identity = RunIdentity(exp_name, run_name)
+    _ = run_registry.create_run(identity)
+
+    assert run_registry.get_git_commit(identity) == fake_commit
+
+
+def test_run_registry_get_git_commit_missing_run_raises(run_registry):
+    with pytest.raises(FileNotFoundError):
+        run_registry.get_git_commit(RunIdentity("missing-exp", "missing-run"))
+
+
 def test_run_logging(run_registry):
     exp_name = EXPERIMENT_NAME
     run_name = RUN_NAME
