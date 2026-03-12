@@ -6,10 +6,109 @@ import torch.nn.functional as F
 from scaling_llms.models import (
     Block,
     CausalSelfAttention,
+    GatedMLP,
     GPTConfig,
     GPTModel,
-    MLP
+    StandardMLP,
+    RMSNorm,
 )
+
+
+# ============================================================
+# TESTS FOR GPT CONFIG NORM TYPE
+# ============================================================
+def test_gpt_config_default_norm_type_is_layernorm():
+    cfg = GPTConfig()
+    assert cfg.norm_type == "layernorm"
+
+
+def test_gpt_model_uses_rmsnorm_when_configured():
+    cfg = GPTConfig(norm_type="rmsnorm", n_layer=1, n_embd=32, n_head=4, seq_len=8)
+    model = GPTModel(cfg)
+
+    first_block = model.transformer.h[0]
+    assert isinstance(first_block.norm1, RMSNorm)
+    assert isinstance(first_block.norm2, RMSNorm)
+    assert isinstance(model.transformer.norm_f, RMSNorm)
+
+
+def test_gpt_config_rejects_invalid_norm_type():
+    with pytest.raises(AssertionError, match="Invalid norm type"):
+        GPTConfig(norm_type="batchnorm")
+
+
+def test_gpt_config_default_ffn_dimensions():
+    cfg = GPTConfig(n_embd=24, n_head=4, mlp_type="standard_gelu")
+    assert cfg.d_ff == 96
+
+
+def test_gpt_config_default_gated_ffn_dimension():
+    cfg = GPTConfig(n_embd=24, n_head=4, mlp_type="swiglu")
+    assert cfg.d_ff_gated == (8 * cfg.n_embd) // 3
+
+
+def test_gpt_config_rejects_too_small_ffn_dims():
+    with pytest.raises(AssertionError, match="d_ff should be larger than n_embd"):
+        GPTConfig(n_embd=32, n_head=4, mlp_type="standard_gelu", d_ff=32)
+
+    with pytest.raises(AssertionError, match="d_ff_gated should be larger than n_embd"):
+        GPTConfig(n_embd=32, n_head=4, mlp_type="swiglu", d_ff_gated=32)
+
+
+@pytest.mark.parametrize(
+    "mlp_type, expected_class, expected_activation",
+    [
+        ("standard_gelu", "mlp", "gelu"),
+        ("standard_silu", "mlp", "silu"),
+        ("geglu", "gated_mlp", "gelu"),
+        ("swiglu", "gated_mlp", "silu"),
+    ],
+)
+def test_gpt_config_inferrs_mlp_class_and_activation(
+    mlp_type,
+    expected_class,
+    expected_activation,
+):
+    cfg = GPTConfig(mlp_type=mlp_type)
+    assert cfg.mlp_class == expected_class
+    assert cfg.activation == expected_activation
+
+
+def test_block_uses_standard_mlp_for_standard_types():
+    cfg = GPTConfig(mlp_type="standard_silu", n_embd=32, n_head=4, seq_len=8)
+    block = Block(cfg)
+    assert isinstance(block.mlp, StandardMLP)
+
+
+def test_block_uses_gated_mlp_for_gated_types():
+    cfg = GPTConfig(mlp_type="swiglu", n_embd=32, n_head=4, seq_len=8)
+    block = Block(cfg)
+    assert isinstance(block.mlp, GatedMLP)
+
+
+def test_gpt_config_rejects_invalid_mlp_type():
+    with pytest.raises(AssertionError, match="Invalid mlp_type"):
+        GPTConfig(mlp_type="foobar")
+
+
+def test_gpt_config_rejects_invalid_pos_encoding_type():
+    with pytest.raises(AssertionError, match="Invalid pos_encoding_type"):
+        GPTConfig(pos_encoding_type="sinusoidal")
+
+
+def test_gpt_config_normalizes_pos_encoding_type_case():
+    cfg = GPTConfig(pos_encoding_type="RoTaRy", n_embd=32, n_head=4)
+    assert cfg.pos_encoding_type == "rotary"
+
+
+def test_gpt_config_rotary_requires_positive_theta():
+    with pytest.raises(AssertionError, match="rope_theta must be positive"):
+        GPTConfig(pos_encoding_type="rotary", rope_theta=0.0, n_embd=32, n_head=4)
+
+
+def test_gpt_config_rotary_requires_even_d_head():
+    with pytest.raises(AssertionError, match="Rotary embeddings require d_head to be even"):
+        GPTConfig(pos_encoding_type="rotary", n_embd=30, n_head=6)
 
 
 # ============================================================
@@ -76,6 +175,22 @@ def test_attn_overfitting(attn_cfg):
     assert losses[-1] < losses[0], "Model is not learning (Loss did not decrease)"
 
 
+def test_attn_uses_rope_when_rotary_configured():
+    cfg = GPTConfig(
+        n_embd=32,
+        n_head=4,
+        seq_len=16,
+        pos_encoding_type="rotary",
+        rope_theta=5000.0,
+    )
+    attn = CausalSelfAttention(cfg)
+    assert attn.rope is not None
+
+    x = torch.randn(2, 8, cfg.n_embd)
+    y = attn(x)
+    assert y.shape == x.shape
+
+
 # ============================================================
 # TESTS FOR MLP
 # ============================================================
@@ -86,7 +201,7 @@ def mlp_cfg():
 
 @pytest.fixture
 def mlp(mlp_cfg):
-    return MLP(mlp_cfg)
+    return StandardMLP(mlp_cfg)
 
 
 def test_mlp_shape_integrity(mlp_cfg, mlp):
@@ -131,7 +246,7 @@ def test_mlp_learning_capacity():
     """Test 3: Can it overfit a simple target? (Gradients check)"""
     torch.manual_seed(42)
     cfg = GPTConfig(n_embd=16)
-    model = MLP(cfg)
+    model = StandardMLP(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
 
     x = torch.randn(4, 5, 16)
@@ -204,7 +319,7 @@ def test_block_gradient_flow(block):
     # Check if gradients exist in sub-components
     assert block.attn.c_attn.weight.grad is not None, "No grad in Attention"
     assert block.mlp.c_fc.weight.grad is not None, "No grad in MLP"
-    assert block.ln1.weight.grad is not None, "No grad in LayerNorm 1"
+    assert block.norm1.weight.grad is not None, "No grad in norm1"
 
 
 # ============================================================
@@ -259,3 +374,56 @@ def test_gpt_weight_tying(gpt_model):
     """Test 3: Are embeddings and head weights the same object?"""
     # Pointers should be identical
     assert gpt_model.transformer.wte.weight is gpt_model.lm_head.weight
+
+
+def test_gpt_can_disable_weight_tying():
+    cfg = GPTConfig(
+        vocab_size=100,
+        n_layer=1,
+        n_head=2,
+        n_embd=16,
+        seq_len=8,
+        tied_embeddings=False,
+    )
+    model = GPTModel(cfg)
+    assert model.transformer.wte.weight is not model.lm_head.weight
+
+
+def test_gpt_forward_rejects_sequence_longer_than_config():
+    cfg = GPTConfig(vocab_size=100, n_layer=1, n_head=2, n_embd=16, seq_len=8)
+    model = GPTModel(cfg)
+    idx = torch.randint(0, cfg.vocab_size, (2, 9))
+
+    with pytest.raises(AssertionError, match="exceeds configured seq_len"):
+        model(idx)
+
+
+def test_gpt_rotary_has_no_absolute_pos_embedding_and_runs():
+    cfg = GPTConfig(
+        vocab_size=100,
+        n_layer=2,
+        n_head=4,
+        n_embd=32,
+        seq_len=16,
+        pos_encoding_type="rotary",
+    )
+    model = GPTModel(cfg)
+
+    assert "wpe" not in model.transformer
+
+    idx = torch.randint(0, cfg.vocab_size, (2, 10))
+    targets = torch.randint(0, cfg.vocab_size, (2, 10))
+    out = model(idx, targets)
+    assert out.loss is not None
+    assert out.logits.shape == (2, 10, cfg.vocab_size)
+
+
+def test_gpt_loss_reduction_none_returns_tokenwise_loss():
+    cfg = GPTConfig(vocab_size=50, n_layer=1, n_head=2, n_embd=16, seq_len=8)
+    model = GPTModel(cfg)
+    idx = torch.randint(0, cfg.vocab_size, (2, 5))
+    targets = torch.randint(0, cfg.vocab_size, (2, 5))
+
+    out = model(idx, targets=targets, loss_reduction="none")
+    assert out.loss is not None
+    assert out.loss.shape == (idx.numel(),)

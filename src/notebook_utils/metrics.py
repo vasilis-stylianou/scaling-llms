@@ -29,7 +29,7 @@ def validate_init_nll(
     raise_on_mismatch: bool = False
 
 ):
-
+    run_name2nll = dict()
     for run_name in metric_reader.list_run_names():
         # Expected NLL: -log(1/vocab_size)
         run = run_reg.get_run(RunIdentity(experiment_name=experiment_name, run_name=run_name))
@@ -50,9 +50,15 @@ def validate_init_nll(
             assert is_close, msg
         elif not is_close:
             print("WARNING: " + msg)
-            
+            run_name2nll[run_name] = dict(
+                observed_nll=observed_nll,
+                expected_nll=expected_nll,
+                pct_diff= (observed_nll - expected_nll) / expected_nll * 100
+            )
     if raise_on_mismatch:
         print("Observed NLL at step=0 matches expected value (~ -log(1/vocab_size)) for all runs.")
+
+    return run_name2nll
 
 
 class StepMetricsReader:
@@ -171,8 +177,8 @@ class StepMetricsReader:
         df_runs = self.run_reg.get_runs_as_df(experiment_name=self.experiment_name)
         run_name2jsonl_reader = dict()
         for row in df_runs.itertuples(index=False):
-            tmp_run = self.run_reg.start_run(self.experiment_name, row.run_name, resume=True)
-            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(tmp_run.get_metrics_dir())
+            run = self.run_reg.get_run(RunIdentity(self.experiment_name, row.run_name))
+            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(run.metrics_dir)
         return run_name2jsonl_reader
     
     

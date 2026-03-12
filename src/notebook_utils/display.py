@@ -170,7 +170,7 @@ def plot_lines(
     title = title or f"{y_col.upper()} vs {x_col.upper()}"
 
     # Ensure deterministic ordering
-    sort_cols = [x_col] if color_col is None else [x_col, color_col]
+    sort_cols = [x_col] if color_col is None else [color_col, x_col]
     df_sorted = df.sort_values(sort_cols) 
 
     # If smoothing requested, compute per-run rolling mean of `nll`.
