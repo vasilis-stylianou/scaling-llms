@@ -68,6 +68,7 @@ class ExperimentRunner:
             resume=False, 
             overwrite=overwrite, 
         ) as run:
+            identity = RunIdentity(self.exp_name, run_name)
             trainer = self._init_trainer(
                 run=run,
                 dataset_id=dataset_id,
@@ -75,6 +76,7 @@ class ExperimentRunner:
                 trainer_cfg=trainer_cfg,
                 gpt_hparams=gpt_hparams,
             )
+            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
             return trainer
 
@@ -87,9 +89,11 @@ class ExperimentRunner:
         with self.run_registry.managed_run(
             RunIdentity(self.exp_name, run_name), resume=True, overwrite=False
         ) as run:
+            identity = RunIdentity(self.exp_name, run_name)
             trainer = self._trainer_from_checkpoint(
                 run=run, ckpt_filename=ckpt_filename
             )
+            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
             return trainer
 
@@ -106,6 +110,7 @@ class ExperimentRunner:
         with self.run_registry.managed_run(
             RunIdentity(self.exp_name, run_name), resume=False, overwrite=False
         ) as new_run:
+            identity = RunIdentity(self.exp_name, run_name)
             new_run.log_metadata(
                 {
                     "initialized_from": {
@@ -175,6 +180,7 @@ class ExperimentRunner:
                 )
 
             trainer.attach_run(new_run)
+            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
 
             return trainer

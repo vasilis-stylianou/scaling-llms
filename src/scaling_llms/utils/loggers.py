@@ -207,7 +207,6 @@ class TrainerLogger(BaseLogger):
     # ---- EXTENDED API ----
     def log_start(
         self,
-        *,
         model_params: str,
         n_layer: int,
         n_embd: int,
@@ -215,7 +214,8 @@ class TrainerLogger(BaseLogger):
         device: str,
         device_name: str,
         precision: str,
-        num_steps: int,
+        max_num_steps: int,
+        remaining_steps: int,
         accum_steps: int,
         lr: float,
         step_idx: int,
@@ -236,8 +236,8 @@ class TrainerLogger(BaseLogger):
             device, device_name, precision
         )
         self.info(
-            "[optimization] num_steps=%d | accum_steps=%d | lr=%.3e | warmup_steps=%d | lr_schedule=%s",
-            num_steps, accum_steps, lr, warmup_steps, lr_schedule
+            "[optimization] max_num_steps=%d | remaining_steps=%d | accum_steps=%d | lr=%.3e | warmup_steps=%d | lr_schedule=%s",
+            max_num_steps, remaining_steps, accum_steps, lr, warmup_steps, lr_schedule
         )
 
     # High-frequency per-step logs should be DEBUG by default.

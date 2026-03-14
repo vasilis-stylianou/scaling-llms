@@ -93,6 +93,10 @@ def test_experiment_runner_start(exp, dataset_kwargs, dataloader_kwargs, gpt_hpa
     )
     assert isinstance(trainer, Trainer)
 
+    runs_df = exp.run_registry.get_runs_as_df(EXPERIMENT_NAME)
+    row = runs_df.query(f"run_name == '{RUN_NAME}'").iloc[0]
+    assert row.device_name == trainer.cfg.device_name
+
     # Check that the expected metadata and checkpoint files have been created in the run directory
     run = trainer.run
     assert run is not None
@@ -143,11 +147,14 @@ def test_experiment_runner_resume(exp, dataset_kwargs, dataloader_kwargs, gpt_hp
     with pytest.raises(ValueError, match=r"Training already complete or beyond target"):
         exp.resume(run_name=RUN_NAME, ckpt_filename=CKPT_FILES.last_ckpt)
 
-    # Case 2: Now attempt to resume from best checkpoint which should work because
-    # best_ckpt is saved at step 2 (eval_log_freq) and num_steps is 3, 
-    # so there is still one step left to train
-    resumed = exp.resume(run_name=RUN_NAME, ckpt_filename=CKPT_FILES.best_ckpt)
-    assert resumed.step_idx == trainer_kwargs["num_steps"], "Resumed trainer did not load the best checkpoint"
+    # Case 2: Resume from best checkpoint with explicit max_steps.
+    # Checkpoints should load and training should resume from the next step after the checkpoint
+    resumed = exp.resume(
+        run_name=RUN_NAME,
+        ckpt_filename=CKPT_FILES.best_ckpt,
+        max_steps=trainer_kwargs["num_steps"] + 1,
+    )
+    assert resumed.step_idx == trainer_kwargs["num_steps"] + 1
 
     # Case 3: Now attempt to resume from last checkpoint but allow additional steps so it doesn't error out
     num_resume_steps = 2

@@ -22,6 +22,7 @@ RUNS_TABLE = TableSpec(
 
         # Metadata fields (Optional)
         ColumnSpec("git_commit", "TEXT", nullable=True, default_sql="NULL"),
+        ColumnSpec("device_name", "TEXT", nullable=True, default_sql="NULL"),
         ColumnSpec("other_data", "TEXT", nullable=True, default_sql="NULL"),
 
     ],

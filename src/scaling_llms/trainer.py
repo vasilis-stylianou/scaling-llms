@@ -291,7 +291,8 @@ class Trainer:
             device=self.device,
             device_name=self.cfg.device_name,
             precision=self.cfg.precision,
-            num_steps=remaining_steps,
+            max_num_steps=target_total,
+            remaining_steps=remaining_steps,
             accum_steps=self.cfg.accum_steps,
             lr=self.cfg.lr,
             step_idx=self.step_idx,
@@ -309,7 +310,10 @@ class Trainer:
             if (
                 (self.eval_dl is not None) and
                 (self.cfg.eval_log_freq > 0) and
-                (self.step_idx % self.cfg.eval_log_freq == 0)
+                (
+                    (self.step_idx % self.cfg.eval_log_freq == 0)  # regular eval interval
+                    or (self.step_idx == target_total - 1)  # always eval at the last step
+                )
             ):
                 # Compute and log eval metrics
                 eval_metrics = self.evaluate(self.eval_dl)
@@ -341,7 +345,8 @@ class Trainer:
                     self.logger.log_checkpoint(f"New best checkpoint at step {self.step_idx}")
                     self.best_eval_nll = eval_metrics["nll"]
                     self.best_step_idx = self.step_idx
-                    self.save_checkpoint(CKPT_FILES.best_ckpt)
+                    self.save_checkpoint(CKPT_FILES.best_ckpt, offset_step_idx=1) 
+                    # NOTE: resuming from this checkpoint should start at the next optimation step
 
             # Checkpoint
             if (
@@ -351,7 +356,8 @@ class Trainer:
                 (self.step_idx % self.cfg.ckpt_log_freq == 0)
             ):
                 ckpt_name = f"step_{self.step_idx}.pt"
-                self.save_checkpoint(ckpt_name)
+                self.save_checkpoint(ckpt_name, offset_step_idx=1)
+                # NOTE: resuming from this checkpoint should start at the next optimization step
                     
             # Update LR
             if self.lr_scheduler is not None:
@@ -364,6 +370,7 @@ class Trainer:
         # Always save a final checkpoint at the end of training if checkpointing is enabled
         if (self.ckpt_manager is not None) and (self.cfg.ckpt_log_freq > 0):
             self.save_checkpoint(CKPT_FILES.last_ckpt)
+            # NOTE: no need to offset step_idx for the final checkpoint since it's already been advanced
 
     @torch.no_grad()
     def evaluate(self, eval_dl) -> dict:
@@ -391,14 +398,17 @@ class Trainer:
             "tokens": total_tokens,
         }
 
-    def save_checkpoint(self, name: str) -> Path:
+    def save_checkpoint(self, name: str, offset_step_idx: int = 0) -> Path:
         if self.ckpt_manager is None:
             raise RuntimeError(
                 "Cannot save checkpoint when Trainer.ckpt_manager is None."
                 "Attach Trainer to a run using trainer.attach_run(run) to enable checkpointing."
             )
         
-        return self.ckpt_manager.save(self.state_dict(), name)
+        trainer_state = self.state_dict()
+        trainer_state["step_idx"] += offset_step_idx
+
+        return self.ckpt_manager.save(trainer_state, name)
 
     def attach_run(self, run: Run) -> None:
         self.run = run

@@ -168,6 +168,14 @@ class RunRegistry(RegistryDB):
             {"status": status.value, "updated_at": ts, **identity.as_kwargs()},
         )
 
+    def set_device_name(self, identity: RunIdentity, device_name: str | None) -> None:
+        if not self.run_exists(identity):
+            raise FileNotFoundError(f"Run not found: {identity}")
+        self.execute(
+            f"UPDATE runs SET device_name=:device_name WHERE {self._identity_where(identity)}",
+            {"device_name": device_name, **identity.as_kwargs()},
+        )
+
     def create_run(
         self,
         identity: RunIdentity,
