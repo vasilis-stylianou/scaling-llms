@@ -12,6 +12,38 @@ from runpod_orchestrator.lifecycle import (
 from runpod_orchestrator.models import SetupSpec
 from runpod_orchestrator.provision import setup_pod
 from runpod_orchestrator.ssh import run_ssh_command
+from scaling_llms.constants import PROJECT_DEV_NAME
+from scaling_llms.storage.google_drive import DEFAULT_GDRIVE
+
+
+def _normalize_drive_subdir(subdir: str) -> str:
+    value = subdir.strip().strip("/")
+    for prefix in ("My Drive/", "MyDrive/"):
+        if value.startswith(prefix):
+            return value[len(prefix):].strip("/")
+    return value
+
+
+def _gdrive_run_registry_candidates() -> list[str]:
+    candidates = [f"gdrive:{PROJECT_DEV_NAME}/run_registry"]
+
+    for raw_subdir in (
+        str(DEFAULT_GDRIVE.desktop_drive_subdir),
+        str(DEFAULT_GDRIVE.colab_drive_subdir),
+    ):
+        normalized = _normalize_drive_subdir(raw_subdir)
+        if normalized:
+            candidates.append(f"gdrive:{normalized}/{PROJECT_DEV_NAME}/run_registry")
+
+    seen: set[str] = set()
+    unique_candidates: list[str] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique_candidates.append(candidate)
+
+    return unique_candidates
 
 
 @pytest.mark.integration
@@ -92,9 +124,12 @@ def test_run_experiment_group_script_e2e_gdrive(
         assert "[group] starting run:" in result.stdout
         assert "[group] finished run:" in result.stdout
 
+        candidates = _gdrive_run_registry_candidates()
+        ls_chain = " || ".join(f"rclone ls {path}" for path in candidates)
+
         verify = run_ssh_command(
             conn,
-            "rclone ls gdrive:scaling-llms-dev/run_registry | grep runs.db",
+            f"({ls_chain}) | grep runs.db",
             identity_file=setup_spec.expanded_identity_file,
             check=False,
         )
