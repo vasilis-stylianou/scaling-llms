@@ -1,0 +1,13 @@
+name: llm-a100
+
+image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+gpu_type_id: NVIDIA A100-SXM4-80GB
+cloud_type: SECURE
+
+container_disk_in_gb: 20
+volume_in_gb: 40
+ports: "22/tcp,8888/http"
+
+identity_file: ~/.ssh/runpod_key
+
+env: {}
