@@ -120,7 +120,6 @@ def test_run_experiment_group_script_e2e_gdrive(
             "cd /workspace/repos/scaling-llms && "
             "poetry run python scripts/run_experiment_group.py "
             "--config-module tests.integration.test_experiment_config "
-            "--remote-project-root /workspace/gdrive_registry "
             "--local-project-root /workspace/local_registry "
             "--transfer-mode rclone "
             "--use-gdrive-remote"
@@ -140,6 +139,36 @@ def test_run_experiment_group_script_e2e_gdrive(
         )
         assert "[group] starting run:" in result.stdout
         assert "[group] finished run:" in result.stdout
+
+        verify_exact = run_ssh_command(
+            conn,
+            (
+                "cd /workspace/repos/scaling-llms && "
+                "poetry run python -c \""
+                "from scaling_llms.constants import METADATA_FILES, PROJECT_DEV_NAME; "
+                "from scaling_llms.registries.runs.identity import RunIdentity; "
+                "from scaling_llms.storage.google_drive import make_gdrive_run_registry; "
+                "registry = make_gdrive_run_registry(project_subdir=PROJECT_DEV_NAME); "
+                "identity = RunIdentity('test_experiment_group', 'group_run_1'); "
+                "assert registry.run_exists(identity); "
+                "run = registry.get_run(identity); "
+                "artifact = run.artifacts.metadata_path(METADATA_FILES.dataset_id); "
+                "assert artifact.exists(), f'Missing artifact file: {artifact}'; "
+                "print('run-ok'); "
+                "print('artifact-ok')"
+                "\""
+            ),
+            identity_file=setup_spec.expanded_identity_file,
+            check=False,
+        )
+
+        assert verify_exact.returncode == 0, (
+            "Expected exact run and artifact verification in GDrive registry to pass\n"
+            f"stdout:\n{verify_exact.stdout}\n"
+            f"stderr:\n{verify_exact.stderr}"
+        )
+        assert "run-ok" in verify_exact.stdout
+        assert "artifact-ok" in verify_exact.stdout
 
         candidates = _gdrive_run_registry_candidates()
         ls_chain = " || ".join(f"rclone ls {path}" for path in candidates)
@@ -163,17 +192,19 @@ def test_run_experiment_group_script_e2e_gdrive(
             break
 
         assert verify is not None
-        if verify.returncode != 0 and _is_gdrive_quota_error(verify.stderr):
-            pytest.skip(
-                "Skipping GDrive artifact verification due to Google Drive API quota/rate limit. "
-                "Remote run completed successfully."
-            )
-
-        assert verify.returncode == 0, (
-            "Expected GDrive run_registry/runs.db to exist after script execution\n"
-            f"stdout:\n{verify.stdout}\n"
-            f"stderr:\n{verify.stderr}"
-        )
+        if verify.returncode != 0:
+            if _is_gdrive_quota_error(verify.stderr):
+                print(
+                    "[warn] coarse runs.db rclone check skipped due to Drive quota/rate limit; "
+                    "exact registry/artifact verification already passed."
+                )
+            else:
+                print(
+                    "[warn] coarse runs.db rclone fallback check failed; "
+                    "exact registry/artifact verification already passed.\n"
+                    f"stdout:\n{verify.stdout}\n"
+                    f"stderr:\n{verify.stderr}"
+                )
     finally:
         if conn is not None:
             pod_tracker(conn.pod_id)
