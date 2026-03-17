@@ -61,7 +61,7 @@ def test_run_experiment_group_script_e2e(
     command = (
         "cd /workspace/repos/scaling-llms && "
         "poetry run python scripts/run_experiment_group.py "
-        "--config-module tests.integration.test_config "
+        "--config-module tests.integration.test_experiment_config "
         "--remote-project-root /workspace/remote_registry "
         "--local-project-root /workspace/local_registry "
         "--transfer-mode rclone"

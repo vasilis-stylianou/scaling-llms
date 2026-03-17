@@ -6,7 +6,9 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from scaling_llms.constants import PROJECT_DEV_NAME
 from scaling_llms.experiments import NestedExperimentRunner
+from scaling_llms.storage.google_drive import make_gdrive_data_registry, make_gdrive_run_registry
 from scaling_llms.storage.local_disk import make_local_data_registry, make_local_run_registry
 
 
@@ -78,10 +80,15 @@ def _load_config_module(config_module_path: str) -> Any:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a group of experiments sequentially")
-    parser.add_argument("--config-module", required=True, help="Python module path, e.g. tests.integration.test_config")
+    parser.add_argument("--config-module", required=True, help="Python module path, e.g. tests.integration.test_experiment_config")
     parser.add_argument("--remote-project-root", default="/workspace/remote_registry")
     parser.add_argument("--local-project-root", default="/workspace/local_registry")
     parser.add_argument("--transfer-mode", default="rclone", choices=["shutil", "rclone"])
+    parser.add_argument(
+        "--use-gdrive-remote",
+        action="store_true",
+        help="Use Google Drive-backed remote registries (dev project) instead of local-disk remote paths.",
+    )
     return parser.parse_args()
 
 
@@ -93,8 +100,13 @@ def main() -> None:
     remote_project_root = Path(args.remote_project_root)
     local_project_root = Path(args.local_project_root)
 
-    remote_run_registry = make_local_run_registry(project_root=remote_project_root)
-    remote_data_registry = make_local_data_registry(project_root=remote_project_root)
+    if args.use_gdrive_remote:
+        remote_run_registry = make_gdrive_run_registry(project_subdir=PROJECT_DEV_NAME)
+        remote_data_registry = make_gdrive_data_registry(project_subdir=PROJECT_DEV_NAME)
+    else:
+        remote_run_registry = make_local_run_registry(project_root=remote_project_root)
+        remote_data_registry = make_local_data_registry(project_root=remote_project_root)
+
     local_run_registry = make_local_run_registry(project_root=local_project_root)
 
     runner = NestedExperimentRunner(

@@ -59,6 +59,10 @@ class IntegrationConfig:
             "RUNPOD_TEST_REPO_URL", 
             "https://github.com/vasilis-stylianou/scaling-llms.git"
         ).strip()
+        self.rclone_config_local = os.getenv(
+            "RUNPOD_TEST_RCLONE_CONFIG",
+            str(Path.home() / ".config" / "rclone" / "rclone.conf"),
+        ).strip()
 
     @property
     def retry_policy(self) -> RetryPolicy:
