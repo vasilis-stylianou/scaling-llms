@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,17 @@ def _gdrive_run_registry_candidates() -> list[str]:
     return unique_candidates
 
 
+def _is_gdrive_quota_error(stderr: str) -> bool:
+    lowered = stderr.lower()
+    markers = (
+        "quota exceeded",
+        "ratelimitexceeded",
+        "rate_limit_exceeded",
+        "queries per minute",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 @pytest.mark.integration
 @pytest.mark.runpod
 def test_run_experiment_group_script_e2e_gdrive(
@@ -54,6 +66,11 @@ def test_run_experiment_group_script_e2e_gdrive(
     docker_args,
     pod_tracker,
 ) -> None:
+    """Run production-like group training path with RunPod + GDrive.
+
+    Note: the final GDrive artifact existence check retries and may skip when
+    Google Drive API quota/rate limits are hit transiently.
+    """
     if not integration_config.up_repo_url:
         pytest.skip("RUNPOD_TEST_REPO_URL is required for run_experiment_group e2e test.")
 
@@ -126,13 +143,31 @@ def test_run_experiment_group_script_e2e_gdrive(
 
         candidates = _gdrive_run_registry_candidates()
         ls_chain = " || ".join(f"rclone ls {path}" for path in candidates)
+        verify = None
+        retry_delays_s = [8, 15, 25, 35]
+        max_attempts = len(retry_delays_s) + 1
 
-        verify = run_ssh_command(
-            conn,
-            f"({ls_chain}) | grep runs.db",
-            identity_file=setup_spec.expanded_identity_file,
-            check=False,
-        )
+        for attempt in range(max_attempts):
+            verify = run_ssh_command(
+                conn,
+                f"({ls_chain}) | grep runs.db",
+                identity_file=setup_spec.expanded_identity_file,
+                check=False,
+            )
+            if verify.returncode == 0:
+                break
+            if _is_gdrive_quota_error(verify.stderr):
+                if attempt < len(retry_delays_s):
+                    time.sleep(retry_delays_s[attempt])
+                continue
+            break
+
+        assert verify is not None
+        if verify.returncode != 0 and _is_gdrive_quota_error(verify.stderr):
+            pytest.skip(
+                "Skipping GDrive artifact verification due to Google Drive API quota/rate limit. "
+                "Remote run completed successfully."
+            )
 
         assert verify.returncode == 0, (
             "Expected GDrive run_registry/runs.db to exist after script execution\n"
