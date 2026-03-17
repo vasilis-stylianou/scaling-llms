@@ -1,6 +1,10 @@
 import pytest
+from contextlib import contextmanager
 
-from scaling_llms.experiments import ExperimentRunner
+from scaling_llms.experiments import (
+    make_gdrive_experiment_runner,
+)
+import scaling_llms.experiments as experiments
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.trainer import Trainer
@@ -11,7 +15,7 @@ RUN_NAME = "run_test"
 
 @pytest.fixture(autouse=True)
 def cleanup_experiments(dataset_kwargs):
-    exp = ExperimentRunner(EXPERIMENT_NAME, is_dev=True)
+    exp = make_gdrive_experiment_runner(EXPERIMENT_NAME, is_dev=True)
     try:
         exp.delete_experiment(confirm=False)
     except Exception:
@@ -36,8 +40,9 @@ def cleanup_experiments(dataset_kwargs):
 
 @pytest.fixture
 def exp():
-    return ExperimentRunner(EXPERIMENT_NAME, is_dev=True)
- 
+    return make_gdrive_experiment_runner(EXPERIMENT_NAME, is_dev=True)
+
+
 @pytest.fixture
 def dataset_kwargs():
     return dict(
@@ -197,3 +202,85 @@ def test_experiment_runner_start_from_checkpoint(exp, dataset_kwargs, dataloader
             ckpt_run_name=RUN_NAME,
             ckpt_filename=CKPT_FILES.best_ckpt,
         )
+
+
+def test_make_gdrive_experiment_runner_uses_rclone_transfer_mode(monkeypatch):
+    class _FakeRunRegistry:
+        def run_exists(self, _identity):
+            return False
+
+        @contextmanager
+        def managed_run(self, _identity, resume=False, overwrite=False):
+            class _Run:
+                metadata_dir = None
+
+            yield _Run()
+
+        def set_device_name(self, _identity, _device_name):
+            return None
+
+    class _FakeDataRegistry:
+        pass
+
+    class _FakeTrainer:
+        class _Cfg:
+            device_name = "cpu"
+
+        cfg = _Cfg()
+
+        def train(self, max_steps=None):
+            return None
+
+    captured: dict[str, str] = {}
+
+    def _fake_init_trainer(*, transfer_mode, **kwargs):
+        captured["transfer_mode"] = transfer_mode
+        return _FakeTrainer()
+
+    monkeypatch.setattr(experiments, "make_gdrive_run_registry", lambda **_: _FakeRunRegistry())
+    monkeypatch.setattr(experiments, "make_gdrive_data_registry", lambda **_: _FakeDataRegistry())
+    monkeypatch.setattr(experiments, "init_trainer", _fake_init_trainer)
+
+    runner = make_gdrive_experiment_runner(
+        exp_name="exp-test-rclone",
+        is_dev=True,
+        transfer_mode="rclone",
+    )
+
+    assert isinstance(runner, experiments.ExperimentRunner)
+    assert runner.transfer_mode == "rclone"
+
+    result = runner.start(
+        run_name="run-test-rclone",
+        dataset_kwargs=dict(
+            dataset_name="super_glue",
+            dataset_config="cb",
+            train_split="train[:1%]",
+            eval_split="test[:1%]",
+            tokenizer_name="gpt2_tiktoken",
+            text_field="premise",
+        ),
+        dataloader_kwargs=dict(
+            seq_len=16,
+            train_batch_size=2,
+            eval_batch_size=2,
+            start_sample_idx=0,
+            seed=1,
+        ),
+        gpt_hparams=dict(n_embd=16, n_layer=1, n_head=1),
+        trainer_kwargs=dict(
+            num_steps=1,
+            lr=3e-4,
+            accum_steps=1,
+            lr_schedule="linear",
+            enable_tb=False,
+            net_log_freq=1,
+            sys_log_freq=1,
+            eval_log_freq=1,
+            ckpt_log_freq=1,
+        ),
+        max_steps=1,
+    )
+
+    assert result is not None
+    assert captured["transfer_mode"] == "rclone"

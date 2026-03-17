@@ -14,7 +14,7 @@ from scaling_llms.models import GPTConfig, GPTModel
 from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, TokenizedDatasetInfo
 from scaling_llms.registries.datasets.identity import DATASET_IDENTITY_COLS, DatasetIdentity
 from scaling_llms.registries.datasets.schema import DATASETS_TABLE
-from scaling_llms.registries.runs.registry import RunRegistry
+from scaling_llms.registries.runs.registry import RunRegistry, RunStatus
 from scaling_llms.registries.runs.identity import RunIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
 from scaling_llms.tracking.trackers import METRIC_SCHEMA
@@ -186,6 +186,65 @@ def test_run_registry_get_git_commit(run_registry, monkeypatch):
 def test_run_registry_get_git_commit_missing_run_raises(run_registry):
     with pytest.raises(FileNotFoundError):
         run_registry.get_git_commit(RunIdentity("missing-exp", "missing-run"))
+
+
+def test_sync_run_from_local_updates_destination_db_state(run_registry, storage, tmp_path: Path):
+    local_project_root = tmp_path / "local_project"
+    local_project_root.mkdir(parents=True, exist_ok=True)
+    local_storage = RegistryStorage(
+        project_root=local_project_root,
+        run_registry_root=local_project_root / "run_registry",
+        runs_db_path=local_project_root / "run_registry" / "runs.db",
+        runs_artifacts_root=local_project_root / "run_registry" / "artifacts",
+        data_registry_root=local_project_root / "data_registry",
+        datasets_db_path=local_project_root / "data_registry" / "datasets.db",
+        datasets_artifacts_root=local_project_root / "data_registry" / "tokenized_datasets",
+    )
+    local_registry = RunRegistry.from_storage(local_storage)
+
+    identity = RunIdentity(EXPERIMENT_NAME, "run_sync_state")
+
+    local_run = local_registry.create_run(identity)
+    local_run.start()
+    (local_run.metadata_dir / "from_local.txt").write_text("synced", encoding="utf-8")
+    local_registry.set_status(identity, RunStatus.SUCCEEDED)
+    local_registry.set_device_name(identity, "cuda:7")
+    local_registry.execute(
+        f"""
+        UPDATE runs
+        SET status_msg=:status_msg, other_data=:other_data, git_commit=:git_commit
+        WHERE {local_registry._build_identity_placeholders(identity)}
+        """,
+        {
+            "status_msg": "done",
+            "other_data": '{"origin":"local"}',
+            "git_commit": "feedface",
+            **identity.as_kwargs(),
+        },
+    )
+    src_run_state = local_registry.get_run_state(identity)
+
+    remote_run = run_registry.create_run(identity)
+    remote_state_before = run_registry.get_run_state(identity)
+    run_registry.sync_run_from_local(
+        identity=identity,
+        src_run_dir=local_run.root,
+        src_run_state=src_run_state,
+        mode="shutil",
+        wipe_remote_artifacts=True,
+    )
+
+    synced_state = run_registry.get_run_state(identity)
+    assert synced_state["status"] == src_run_state["status"]
+    assert synced_state["status_msg"] == src_run_state["status_msg"]
+    assert synced_state["device_name"] == src_run_state["device_name"]
+    assert synced_state["git_commit"] == src_run_state["git_commit"]
+    assert synced_state["other_data"] == src_run_state["other_data"]
+    assert synced_state["updated_at"] == src_run_state["updated_at"]
+
+    assert synced_state["artifacts_path"] == remote_state_before["artifacts_path"]
+    assert synced_state["run_absolute_path"] == remote_state_before["run_absolute_path"]
+    assert (remote_run.metadata_dir / "from_local.txt").exists()
 
 
 def test_run_logging(run_registry):

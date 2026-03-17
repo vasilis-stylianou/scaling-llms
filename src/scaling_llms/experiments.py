@@ -1,6 +1,9 @@
+# experiments.py
+
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from scaling_llms.constants import (
@@ -19,31 +22,186 @@ from scaling_llms.storage.google_drive import (
     make_gdrive_data_registry,
     make_gdrive_run_registry,
 )
+from scaling_llms.storage.local_disk import LocalDiskConfigs, make_local_run_registry, setup_local_storage
 from scaling_llms.trainer import Trainer, TrainerConfig
+
+
+# =============================================================================
+# Shared functions
+# =============================================================================
+
+
+def build_model(
+    *,
+    seq_len: int,
+    vocab_size: int,
+    gpt_hparams: dict[str, Any],
+) -> GPTModel:
+    model_cfg = GPTConfig(
+        seq_len=seq_len,
+        vocab_size=vocab_size,
+        **gpt_hparams,
+    )
+    return GPTModel(model_cfg)
+
+
+def init_trainer(
+    *,
+    run: Any,
+    data_registry: Any,
+    local_data_dir: str,
+    transfer_mode: str,
+    dataset_id: DatasetIdentity,
+    dl_cfg: DataLoaderConfig,
+    trainer_cfg: TrainerConfig,
+    gpt_hparams: dict[str, Any],
+) -> Trainer:
+    dl_dict = get_dataloaders(
+        dataset_id=dataset_id,
+        data_registry=data_registry,
+        dataloader_config=dl_cfg,
+        local_data_dir=local_data_dir,
+        run=run,
+        transfer_mode=transfer_mode,
+    )
+
+    run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+    run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
+
+    model = build_model(
+        seq_len=dl_cfg.seq_len,
+        vocab_size=dl_dict["info"]["vocab_size"],
+        gpt_hparams=gpt_hparams,
+    )
+
+    return Trainer(
+        cfg=trainer_cfg,
+        model=model,
+        train_dl=dl_dict["train"],
+        eval_dl=dl_dict["eval"],
+        run=run,
+    )
+
+
+def trainer_from_checkpoint(
+    *,
+    run: Any,
+    data_registry: Any,
+    local_data_dir: str,
+    transfer_mode: str,
+    ckpt_filename: str,
+    reset_state: bool,
+) -> Trainer:
+    trainer = Trainer.from_checkpoint(
+        run,
+        ckpt_name=ckpt_filename,
+        reset_state=reset_state,
+    )
+
+    dataset_id = DatasetIdentity.from_json(
+        path=run.artifacts.metadata_path(METADATA_FILES.dataset_id)
+    )
+    dl_cfg = DataLoaderConfig.from_json(
+        path=run.artifacts.metadata_path(METADATA_FILES.dataloader_config),
+        overwrite_data={"start_sample_idx": trainer.step_idx},
+    )
+
+    dl_dict = get_dataloaders(
+        dataset_id=dataset_id,
+        data_registry=data_registry,
+        dataloader_config=dl_cfg,
+        local_data_dir=local_data_dir,
+        run=run,
+        transfer_mode=transfer_mode,
+    )
+
+    trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
+    return trainer
+
+
+def validate_checkpoint_compatibility(
+    *,
+    source_run: Any,
+    target_run_name: str,
+    target_exp_name: str,
+    target_dataloader_kwargs: dict[str, Any],
+    target_dl_info: dict[str, Any],
+    delete_run_fn,
+) -> None:
+    old_dl_kwargs = json.loads(
+        source_run.artifacts.metadata_path(METADATA_FILES.dataloader_config).read_text()
+    )
+    if old_dl_kwargs["seq_len"] != target_dataloader_kwargs["seq_len"]:
+        delete_run_fn(run_name=target_run_name, confirm=False)
+        raise ValueError(
+            f"Sequence length mismatch between old run ({old_dl_kwargs['seq_len']}) "
+            f"and new run ({target_dataloader_kwargs['seq_len']}). "
+            "Checkpoint loading may fail."
+        )
+
+    old_model_kwargs = json.loads(
+        source_run.artifacts.metadata_path(METADATA_FILES.model_config).read_text()
+    )
+    if old_model_kwargs["vocab_size"] != target_dl_info["vocab_size"]:
+        delete_run_fn(run_name=target_run_name, confirm=False)
+        raise ValueError(
+            f"Vocab size mismatch between old run ({old_model_kwargs['vocab_size']}) "
+            f"and new run ({target_dl_info['vocab_size']}). "
+            "Checkpoint loading may fail."
+        )
+
+
+def build_transfer_dataloaders(
+    *,
+    run: Any,
+    data_registry: Any,
+    local_data_dir: str,
+    transfer_mode: str,
+    dataset_kwargs: dict[str, Any],
+    dataloader_kwargs: dict[str, Any],
+) -> tuple[DatasetIdentity, DataLoaderConfig, dict[str, Any]]:
+    dataset_id = DatasetIdentity(**dataset_kwargs)
+    dl_cfg = DataLoaderConfig(**dataloader_kwargs)
+
+    run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+    run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
+
+    dl_dict = get_dataloaders(
+        dataset_id=dataset_id,
+        data_registry=data_registry,
+        dataloader_config=dl_cfg,
+        local_data_dir=local_data_dir,
+        run=run,
+        transfer_mode=transfer_mode,
+    )
+    return dataset_id, dl_cfg, dl_dict
+
+
+# =============================================================================
+# Single-registry runner
+# =============================================================================
 
 
 class ExperimentRunner:
     """
-    High-level interface for managing training experiments, runs, and checkpoints.
-
-    Main Methods:
-    - start: Start a new training run with specified configs.
-    - resume: Resume training from the latest checkpoint.
-    - start_from_checkpoint: Start a new run initialized from an existing checkpoint.
-    - delete_experiment: Delete an entire experiment and all its runs.
-    - delete_run: Delete a specific run within an experiment.
-
+    Single-registry experiment runner.
     """
 
-    def __init__(self, exp_name: str, is_dev: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        exp_name: str,
+        run_registry: Any,
+        data_registry: Any,
+        local_data_dir: str,
+        transfer_mode: str = "rclone",
+    ) -> None:
         self.exp_name = exp_name
-        self.is_dev = is_dev
-        self.project_subdir = PROJECT_DEV_NAME if self.is_dev else PROJECT_NAME
-        self.local_data_dir = LOCAL_DEV_DATA_DIR if self.is_dev else LOCAL_DATA_DIR
-        self.run_registry = make_gdrive_run_registry(project_subdir=self.project_subdir)
-        self.data_registry = make_gdrive_data_registry(project_subdir=self.project_subdir)
+        self.run_registry = run_registry
+        self.data_registry = data_registry
+        self.local_data_dir = local_data_dir
+        self.transfer_mode = transfer_mode
 
-    # --- API ---
     def start(
         self,
         run_name: str,
@@ -54,23 +212,30 @@ class ExperimentRunner:
         max_steps: int | None = None,
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
-    ) -> Trainer:
-        if ignore_if_run_exists and self.run_registry.run_exists(RunIdentity(self.exp_name, run_name)):
-            print(f"Run {self.exp_name}/{run_name} already exists, but ignore_if_run_exists=True, so ignoring and proceeding.")
-            return None  
+    ) -> Trainer | None:
+        identity = RunIdentity(self.exp_name, run_name)
+
+        if ignore_if_run_exists and self.run_registry.run_exists(identity):
+            print(
+                f"Run {self.exp_name}/{run_name} already exists, "
+                "but ignore_if_run_exists=True, so ignoring and proceeding."
+            )
+            return None
 
         dataset_id = DatasetIdentity(**dataset_kwargs)
         dl_cfg = DataLoaderConfig(**dataloader_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, run_name),
-            resume=False, 
-            overwrite=overwrite, 
+            identity,
+            resume=False,
+            overwrite=overwrite,
         ) as run:
-            identity = RunIdentity(self.exp_name, run_name)
-            trainer = self._init_trainer(
+            trainer = init_trainer(
                 run=run,
+                data_registry=self.data_registry,
+                local_data_dir=self.local_data_dir,
+                transfer_mode=self.transfer_mode,
                 dataset_id=dataset_id,
                 dl_cfg=dl_cfg,
                 trainer_cfg=trainer_cfg,
@@ -86,12 +251,20 @@ class ExperimentRunner:
         ckpt_filename: str = CKPT_FILES.best_ckpt,
         max_steps: int | None = None,
     ) -> Trainer:
+        identity = RunIdentity(self.exp_name, run_name)
+
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, run_name), resume=True, overwrite=False
+            identity,
+            resume=True,
+            overwrite=False,
         ) as run:
-            identity = RunIdentity(self.exp_name, run_name)
-            trainer = self._trainer_from_checkpoint(
-                run=run, ckpt_filename=ckpt_filename
+            trainer = trainer_from_checkpoint(
+                run=run,
+                data_registry=self.data_registry,
+                local_data_dir=self.local_data_dir,
+                transfer_mode=self.transfer_mode,
+                ckpt_filename=ckpt_filename,
+                reset_state=False,
             )
             self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
@@ -107,10 +280,13 @@ class ExperimentRunner:
         ckpt_filename: str,
         max_steps: int | None = None,
     ) -> Trainer:
+        identity = RunIdentity(self.exp_name, run_name)
+
         with self.run_registry.managed_run(
-            RunIdentity(self.exp_name, run_name), resume=False, overwrite=False
+            identity,
+            resume=False,
+            overwrite=False,
         ) as new_run:
-            identity = RunIdentity(self.exp_name, run_name)
             new_run.log_metadata(
                 {
                     "initialized_from": {
@@ -122,146 +298,366 @@ class ExperimentRunner:
                 "source_checkpoint.json",
                 format="json",
             )
-            dataset_id = DatasetIdentity(**dataset_kwargs)
-            dl_cfg = DataLoaderConfig(**dataloader_kwargs)
 
-            new_run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
-            new_run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
-            dl_dict = get_dataloaders(
-                dataset_id=dataset_id,
-                data_registry=self.data_registry,
-                dataloader_config=dl_cfg,
-                local_data_dir=self.local_data_dir,
+            _, _, dl_dict = build_transfer_dataloaders(
                 run=new_run,
+                data_registry=self.data_registry,
+                local_data_dir=self.local_data_dir,
+                transfer_mode=self.transfer_mode,
+                dataset_kwargs=dataset_kwargs,
+                dataloader_kwargs=dataloader_kwargs,
             )
 
-            # Open old run just long enough to load ckpt into a Trainer object
             with self.run_registry.managed_run(
                 RunIdentity(ckpt_exp_name, ckpt_run_name),
                 resume=True,
                 overwrite=False,
             ) as old_run:
-                # Validate sequence length matches between old and new runs
-                old_dl_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(METADATA_FILES.dataloader_config).read_text()
-                )  
-                
-                if old_dl_kwargs["seq_len"] != dataloader_kwargs["seq_len"]:
-                    self.delete_run(
-                        run_name=run_name,
-                        confirm=False
-                    )  # Clean up new run since it won't be usable
-                    raise ValueError(
-                        f"Sequence length mismatch between old run ({old_dl_kwargs['seq_len']}) and new run ({dataloader_kwargs['seq_len']}). "
-                        "Checkpoint loading may fail."
-                    )
-
-                # Validate vocab size matches between old and new runs
-                old_model_kwargs = json.loads(
-                    old_run.artifacts.metadata_path(METADATA_FILES.model_config).read_text()
+                validate_checkpoint_compatibility(
+                    source_run=old_run,
+                    target_run_name=run_name,
+                    target_exp_name=self.exp_name,
+                    target_dataloader_kwargs=dataloader_kwargs,
+                    target_dl_info=dl_dict["info"],
+                    delete_run_fn=self.delete_run,
                 )
-                if old_model_kwargs["vocab_size"] != dl_dict["info"]["vocab_size"]:
-                    self.delete_run(
-                        run_name=run_name,
-                        confirm=False
-                    )  # Clean up new run since it won't be usable
-                    raise ValueError(
-                        f"Vocab size mismatch between old run ({old_model_kwargs['vocab_size']}) and new run ({dl_dict['info']['vocab_size']}). "
-                        "Checkpoint loading may fail."
-                    )
 
-                # Load trainer from checkpoint
                 trainer = Trainer.from_checkpoint(
                     old_run,
                     ckpt_name=ckpt_filename,
                     train_dl=dl_dict["train"],
                     eval_dl=dl_dict["eval"],
-                    reset_state=True,  # Reset state (e.g. optimizer, lr scheduler,step_idx)
+                    reset_state=True,
                 )
 
             trainer.attach_run(new_run)
             self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
-
             return trainer
 
-    def delete_experiment(self, confirm=True) -> None:
+    def delete_experiment(self, confirm: bool = True) -> None:
         self.run_registry.delete_experiment(self.exp_name, confirm=confirm)
 
-    def delete_run(self, run_name: str, confirm=True) -> None:
+    def delete_run(self, run_name: str, confirm: bool = True) -> None:
         self.run_registry.delete_run(RunIdentity(self.exp_name, run_name), confirm=confirm)
 
-    # --- Internal methods ---
-    def _build_model(
-        self, seq_len: int, vocab_size: int, gpt_hparams: dict[str, Any]
-    ) -> GPTModel:
-        model_cfg = GPTConfig(
-            seq_len=seq_len,
-            vocab_size=vocab_size,
-            **gpt_hparams,
-        )
-        return GPTModel(model_cfg)
 
-    def _init_trainer(
+# =============================================================================
+# Nested runner
+# =============================================================================
+
+
+class NestedExperimentRunner:
+    """
+    Nested runner:
+    - outer managed run = canonical remote lifecycle
+    - inner local run = fast training/logging workspace
+    """
+
+    def __init__(
         self,
         *,
-        run: Any,
-        dataset_id: DatasetIdentity,
-        dl_cfg: DataLoaderConfig,
-        trainer_cfg: TrainerConfig,
+        exp_name: str,
+        remote_run_registry: Any,
+        local_run_registry: Any,
+        data_registry: Any,
+        local_data_dir: str,
+        transfer_mode: str = "rclone",
+    ) -> None:
+        self.exp_name = exp_name
+        self.remote_run_registry = remote_run_registry
+        self.local_run_registry = local_run_registry
+        self.data_registry = data_registry
+        self.local_data_dir = local_data_dir
+        self.transfer_mode = transfer_mode
+
+    def start(
+        self,
+        run_name: str,
+        dataset_kwargs: dict[str, Any],
+        dataloader_kwargs: dict[str, Any],
         gpt_hparams: dict[str, Any],
+        trainer_kwargs: dict[str, Any],
+        max_steps: int | None = None,
+        overwrite: bool = False,
+        ignore_if_run_exists: bool = False,
+    ) -> Trainer | None:
+        identity = RunIdentity(self.exp_name, run_name)
+
+        if ignore_if_run_exists and self.remote_run_registry.run_exists(identity):
+            print(
+                f"Run {self.exp_name}/{run_name} already exists, "
+                "but ignore_if_run_exists=True, so ignoring and proceeding."
+            )
+            return None
+
+        dataset_id = DatasetIdentity(**dataset_kwargs)
+        dl_cfg = DataLoaderConfig(**dataloader_kwargs)
+        trainer_cfg = TrainerConfig(**trainer_kwargs)
+
+        with self.remote_run_registry.managed_run(
+            identity,
+            resume=False,
+            overwrite=overwrite,
+        ):
+            local_run = self.local_run_registry.create_run(
+                identity=identity,
+                resume=False,
+                overwrite=overwrite,
+            )
+
+            try:
+                local_run.start(resume=False)
+
+                trainer = init_trainer(
+                    run=local_run,
+                    data_registry=self.data_registry,
+                    local_data_dir=self.local_data_dir,
+                    transfer_mode=self.transfer_mode,
+                    dataset_id=dataset_id,
+                    dl_cfg=dl_cfg,
+                    trainer_cfg=trainer_cfg,
+                    gpt_hparams=gpt_hparams,
+                )
+
+                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
+                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
+
+                self.sync_local_to_remote(identity=identity, local_run=local_run)
+
+                trainer.train(max_steps=max_steps)
+
+                self.sync_local_to_remote(identity=identity, local_run=local_run)
+                return trainer
+
+            finally:
+                try:
+                    local_run.close()
+                finally:
+                    self.sync_local_to_remote(identity=identity, local_run=local_run)
+
+    def resume(
+        self,
+        run_name: str,
+        ckpt_filename: str = CKPT_FILES.best_ckpt,
+        max_steps: int | None = None,
     ) -> Trainer:
-        dl_dict = get_dataloaders(
-            dataset_id=dataset_id,
-            data_registry=self.data_registry,
-            dataloader_config=dl_cfg,
-            local_data_dir=self.local_data_dir,
-            run=run,
-        )
-        run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
-        run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
+        identity = RunIdentity(self.exp_name, run_name)
 
-        model = self._build_model(
-            seq_len=dl_cfg.seq_len,
-            vocab_size=dl_dict["info"]["vocab_size"],
-            gpt_hparams=gpt_hparams,
+        with self.remote_run_registry.managed_run(
+            identity,
+            resume=True,
+            overwrite=False,
+        ) as remote_run:
+            local_run = self.local_run_registry.create_run(
+                identity=identity,
+                resume=True,
+                overwrite=False,
+            )
+
+            try:
+                local_run.start(resume=True)
+                self.sync_remote_to_local(identity=identity, remote_run=remote_run)
+
+                trainer = trainer_from_checkpoint(
+                    run=local_run,
+                    data_registry=self.data_registry,
+                    local_data_dir=self.local_data_dir,
+                    transfer_mode=self.transfer_mode,
+                    ckpt_filename=ckpt_filename,
+                    reset_state=False,
+                )
+
+                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
+                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
+
+                trainer.train(max_steps=max_steps)
+
+                self.sync_local_to_remote(identity=identity, local_run=local_run)
+                return trainer
+
+            finally:
+                try:
+                    local_run.close()
+                finally:
+                    self.sync_local_to_remote(identity=identity, local_run=local_run)
+
+    def start_from_checkpoint(
+        self,
+        run_name: str,
+        dataset_kwargs: dict[str, Any],
+        dataloader_kwargs: dict[str, Any],
+        ckpt_exp_name: str,
+        ckpt_run_name: str,
+        ckpt_filename: str,
+        max_steps: int | None = None,
+    ) -> Trainer:
+        identity = RunIdentity(self.exp_name, run_name)
+
+        with self.remote_run_registry.managed_run(
+            identity,
+            resume=False,
+            overwrite=False,
+        ):
+            local_run = self.local_run_registry.create_run(
+                identity=identity,
+                resume=False,
+                overwrite=False,
+            )
+
+            try:
+                local_run.start(resume=False)
+
+                local_run.log_metadata(
+                    {
+                        "initialized_from": {
+                            "exp": ckpt_exp_name,
+                            "run": ckpt_run_name,
+                            "ckpt": ckpt_filename,
+                        }
+                    },
+                    "source_checkpoint.json",
+                    format="json",
+                )
+
+                _, _, dl_dict = build_transfer_dataloaders(
+                    run=local_run,
+                    data_registry=self.data_registry,
+                    local_data_dir=self.local_data_dir,
+                    transfer_mode=self.transfer_mode,
+                    dataset_kwargs=dataset_kwargs,
+                    dataloader_kwargs=dataloader_kwargs,
+                )
+
+                source_identity = RunIdentity(ckpt_exp_name, ckpt_run_name)
+                with self.remote_run_registry.managed_run(
+                    source_identity,
+                    resume=True,
+                    overwrite=False,
+                ) as source_remote_run:
+                    source_local_run = self.local_run_registry.create_run(
+                        identity=source_identity,
+                        resume=True,
+                        overwrite=False,
+                    )
+
+                    try:
+                        source_local_run.start(resume=True)
+                        self.sync_remote_to_local(
+                            identity=source_identity,
+                            remote_run=source_remote_run,
+                        )
+
+                        validate_checkpoint_compatibility(
+                            source_run=source_local_run,
+                            target_run_name=run_name,
+                            target_exp_name=self.exp_name,
+                            target_dataloader_kwargs=dataloader_kwargs,
+                            target_dl_info=dl_dict["info"],
+                            delete_run_fn=self.delete_run,
+                        )
+
+                        trainer = Trainer.from_checkpoint(
+                            source_local_run,
+                            ckpt_name=ckpt_filename,
+                            train_dl=dl_dict["train"],
+                            eval_dl=dl_dict["eval"],
+                            reset_state=True,
+                        )
+                    finally:
+                        source_local_run.close()
+
+                trainer.attach_run(local_run)
+
+                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
+                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
+
+                self.sync_local_to_remote(identity=identity, local_run=local_run)
+
+                trainer.train(max_steps=max_steps)
+
+                self.sync_local_to_remote(identity=identity, local_run=local_run)
+                return trainer
+
+            finally:
+                try:
+                    local_run.close()
+                finally:
+                    self.sync_local_to_remote(identity=identity, local_run=local_run)
+
+    def delete_experiment(self, confirm: bool = True) -> None:
+        self.remote_run_registry.delete_experiment(self.exp_name, confirm=confirm)
+        self.local_run_registry.delete_experiment(self.exp_name, confirm=False)
+
+    def delete_run(self, run_name: str, confirm: bool = True) -> None:
+        identity = RunIdentity(self.exp_name, run_name)
+        self.remote_run_registry.delete_run(identity, confirm=confirm)
+        self.local_run_registry.delete_run(identity, confirm=False)
+
+    def sync_local_to_remote(self, *, identity: RunIdentity, local_run: Any) -> None:
+        mode = "rclone" if self.remote_run_registry.storage is not None else "shutil"
+        src_run_state = self.local_run_registry.get_run_state(identity)
+        self.remote_run_registry.sync_run_from_local(
+            identity=identity,
+            src_run_dir=local_run.root,
+            src_run_state=src_run_state,
+            mode=mode,
         )
 
-        return Trainer(
-            cfg=trainer_cfg,
-            model=model,
-            train_dl=dl_dict["train"],
-            eval_dl=dl_dict["eval"],
-            run=run,
+    def sync_remote_to_local(self, *, identity: RunIdentity, remote_run: Any) -> None:
+        mode = "rclone" if self.local_run_registry.storage is not None else "shutil"
+        src_run_state = self.remote_run_registry.get_run_state(identity)
+        self.local_run_registry.sync_run_from_local(
+            identity=identity,
+            src_run_dir=remote_run.root,
+            src_run_state=src_run_state,
+            mode=mode,
         )
 
-    def _trainer_from_checkpoint(self, run: Any, ckpt_filename: str) -> Trainer:
-        # Load trainer state from checkpoint
-        trainer = Trainer.from_checkpoint(
-            run,
-            ckpt_name=ckpt_filename,
-            reset_state=False,  # Load full trainer state by default when resuming
-        )
 
-        # Reload dataset identity and dataloader config from run metadata,
-        # offsetting start_sample_idx by the trainer's current step for correct resumption.
-        dataset_id = DatasetIdentity.from_json(
-            path=run.artifacts.metadata_path(METADATA_FILES.dataset_id)
-        )
-        dl_cfg = DataLoaderConfig.from_json(
-            path=run.artifacts.metadata_path(METADATA_FILES.dataloader_config),
-            overwrite_data={"start_sample_idx": trainer.step_idx},
-        )
+# =============================================================================
+# Convenience factory
+# =============================================================================
+def make_gdrive_experiment_runner(
+    exp_name: str,
+    is_dev: bool = True,
+    transfer_mode: str = "rclone",
+    local_data_dir: Path | None = None,
+) -> ExperimentRunner:
+    project_subdir = PROJECT_DEV_NAME if is_dev else PROJECT_NAME
+    local_data_dir = local_data_dir or (LOCAL_DEV_DATA_DIR if is_dev else LOCAL_DATA_DIR)
 
-        dl_dict = get_dataloaders(
-            dataset_id=dataset_id,
-            data_registry=self.data_registry,
-            dataloader_config=dl_cfg,
-            local_data_dir=self.local_data_dir,
-            run=run,
-        )
+    remote_run_registry = make_gdrive_run_registry(project_subdir=project_subdir)
+    data_registry = make_gdrive_data_registry(project_subdir=project_subdir)
 
-        # Attach dataloaders to trainer
-        trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
+    return ExperimentRunner(
+        exp_name=exp_name,
+        run_registry=remote_run_registry,
+        data_registry=data_registry,
+        local_data_dir=local_data_dir,
+        transfer_mode=transfer_mode,
+    )
 
-        return trainer
+
+def make_gdrive_local_disk_nested_experiment_runner(
+    exp_name: str,
+    project_root: str,
+    is_dev: bool = True,
+    transfer_mode: str = "rclone"
+) -> NestedExperimentRunner:
+    project_subdir = PROJECT_DEV_NAME if is_dev else PROJECT_NAME
+
+    remote_run_registry = make_gdrive_run_registry(project_subdir=project_subdir)
+    local_cfg = LocalDiskConfigs(project_root=project_root)
+    local_storage = setup_local_storage(local_cfg)
+    local_run_registry = make_local_run_registry(configs=local_cfg)
+    data_registry = make_gdrive_data_registry(project_subdir=project_subdir)
+
+    return NestedExperimentRunner(
+        exp_name=exp_name,
+        remote_run_registry=remote_run_registry,
+        local_run_registry=local_run_registry,
+        data_registry=data_registry,
+        local_data_dir=local_storage.data_registry_root,
+        transfer_mode=transfer_mode,
+    )

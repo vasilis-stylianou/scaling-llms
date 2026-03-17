@@ -305,7 +305,7 @@ def test_trainer_train_resume_logic(trainer):
     assert (trainer.step_idx - curr_step_idx) == (max_steps - NUM_STEPS)
 
 
-def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_model, dummy_dataloader, tmp_run, trainer):
+def test_trainer_checkpoint_roundtrip(minimal_trainer_config, dummy_dataloader, tmp_run, trainer):
 
     trainer.run.log_metadata(minimal_trainer_config, METADATA_FILES.trainer_config, format="json")
     trainer.train()

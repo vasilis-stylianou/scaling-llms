@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from enum import StrEnum
 import shutil
+import subprocess
 from pathlib import Path
 import pandas as pd
 
@@ -132,23 +133,35 @@ class RunRegistry(RegistryDB):
 
     def get_run_dir(self, identity: RunIdentity) -> Path:
         row = self.fetchone(
-            f"SELECT artifacts_path FROM runs WHERE {self._identity_where(identity)}",
+            f"SELECT artifacts_path FROM runs WHERE {self._build_identity_placeholders(identity)}",
             identity.as_kwargs(),
         )
         if row is None:
             raise FileNotFoundError(f"Run not found: {identity}")
         return self.artifacts_root / row[0]
 
+    def get_run_state(self, identity: RunIdentity) -> dict[str, object]:
+        row = self.fetchone(
+            f"SELECT * FROM runs WHERE {self._build_identity_placeholders(identity)}",
+            identity.as_kwargs(),
+        )
+        if row is None:
+            raise FileNotFoundError(f"Run not found: {identity}")
+
+        runs_table = next(spec for spec in TABLE_SPECS if spec.name == "runs")
+        cols = [col.name for col in runs_table.columns]
+        return dict(zip(cols, row))
+
     def run_exists(self, identity: RunIdentity) -> bool:
         row = self.fetchone(
-            f"SELECT 1 FROM runs WHERE {self._identity_where(identity)}",
+            f"SELECT 1 FROM runs WHERE {self._build_identity_placeholders(identity)}",
             identity.as_kwargs(),
         )
         return row is not None
 
     def get_git_commit(self, identity: RunIdentity) -> str | None:
         row = self.fetchone(
-            f"SELECT git_commit FROM runs WHERE {self._identity_where(identity)}",
+            f"SELECT git_commit FROM runs WHERE {self._build_identity_placeholders(identity)}",
             identity.as_kwargs(),
         )
         if row is None:
@@ -164,7 +177,7 @@ class RunRegistry(RegistryDB):
             raise FileNotFoundError(f"Run not found: {identity}")
         ts = get_local_iso_timestamp()
         self.execute(
-            f"UPDATE runs SET status=:status, updated_at=:updated_at WHERE {self._identity_where(identity)}",
+            f"UPDATE runs SET status=:status, updated_at=:updated_at WHERE {self._build_identity_placeholders(identity)}",
             {"status": status.value, "updated_at": ts, **identity.as_kwargs()},
         )
 
@@ -172,7 +185,7 @@ class RunRegistry(RegistryDB):
         if not self.run_exists(identity):
             raise FileNotFoundError(f"Run not found: {identity}")
         self.execute(
-            f"UPDATE runs SET device_name=:device_name WHERE {self._identity_where(identity)}",
+            f"UPDATE runs SET device_name=:device_name WHERE {self._build_identity_placeholders(identity)}",
             {"device_name": device_name, **identity.as_kwargs()},
         )
 
@@ -252,7 +265,7 @@ class RunRegistry(RegistryDB):
             shutil.rmtree(run_dir)
 
         self.execute(
-            f"DELETE FROM runs WHERE {self._identity_where(identity)}",
+            f"DELETE FROM runs WHERE {self._build_identity_placeholders(identity)}",
             identity.as_kwargs(),
         )
 
@@ -283,7 +296,7 @@ class RunRegistry(RegistryDB):
                 return
 
         row = self.fetchone(
-            f"SELECT artifacts_path, run_absolute_path FROM runs WHERE {self._identity_where(identity)}",
+            f"SELECT artifacts_path, run_absolute_path FROM runs WHERE {self._build_identity_placeholders(identity)}",
             identity.as_kwargs(),
         )
         if row is None:
@@ -319,7 +332,7 @@ class RunRegistry(RegistryDB):
             f"""
             UPDATE runs
             SET {set_id_clause}, artifacts_path=:artifacts_path, run_absolute_path=:run_absolute_path, updated_at=:updated_at
-            WHERE {self._identity_where(identity)}
+            WHERE {self._build_identity_placeholders(identity)}
             """,
             {
                 **new_id_params,
@@ -353,6 +366,98 @@ class RunRegistry(RegistryDB):
 
         self.execute("DELETE FROM runs WHERE experiment_name=:experiment_name", {"experiment_name": experiment_name})
 
+    def sync_run_from_local(
+        self,
+        identity: RunIdentity,
+        src_run_dir: Path,
+        src_run_state: dict[str, object],
+        mode: str,
+        *,
+        wipe_remote_artifacts: bool = False,
+        rclone_executable: str = "rclone",
+        rclone_extra_args: list[str] | None = None,
+    ) -> Run:
+        if mode not in {"shutil", "rclone"}:
+            raise ValueError(f"Invalid sync mode: {mode}")
+
+        src_experiment_name = src_run_state.get("experiment_name")
+        src_run_name = src_run_state.get("run_name")
+        if (
+            src_experiment_name is not None
+            and src_run_name is not None
+            and (
+                str(src_experiment_name) != identity.experiment_name
+                or str(src_run_name) != identity.run_name
+            )
+        ):
+            raise ValueError(
+                "src_run_state identity does not match destination identity: "
+                f"src=({src_experiment_name}, {src_run_name}) "
+                f"dst=({identity.experiment_name}, {identity.run_name})"
+            )
+
+        if not self.run_exists(identity):
+            raise FileNotFoundError(f"Destination run not found in registry: {identity}")
+
+        # Prepare source (local) and destination (remote) paths
+        dst_run = self.get_run(identity)
+        src_root = src_run_dir.resolve()
+        dst_root = dst_run.root.resolve()
+        # dst_root = self.get_run_dir(identity)
+
+        if not src_root.exists():
+            raise FileNotFoundError(f"Local run artifacts directory does not exist: {src_root}")
+
+        dst_run.artifacts.ensure_dirs(exist_ok=True)
+
+        # Copy local run artifacts to (remote) run registry
+        if mode == "shutil":
+            self._sync_dir_shutil(
+                src=src_root,
+                dst=dst_root,
+                wipe_dst=wipe_remote_artifacts,
+            )
+        elif mode == "rclone":
+            self._sync_dir_rclone(
+                src=src_root,
+                dst=dst_root,
+                wipe_dst=wipe_remote_artifacts,
+                rclone_executable=rclone_executable,
+                extra_args=rclone_extra_args or [],
+            )
+        
+        # Update destination DB state from source run state while preserving
+        # destination-specific identity and artifact paths.
+        syncable_state_cols = {
+            "created_at",
+            "updated_at",
+            "status",
+            "status_msg",
+            "git_commit",
+            "device_name",
+            "other_data",
+        }
+        update_params = {
+            key: src_run_state[key] for key in syncable_state_cols if key in src_run_state
+        }
+        if not update_params.get("updated_at"):
+            update_params["updated_at"] = get_local_iso_timestamp()
+
+        set_clause = ", ".join(f"{k}=:{k}" for k in update_params)
+        self.execute(
+            f"""
+            UPDATE runs
+            SET {set_clause}
+            WHERE {self._build_identity_placeholders(identity)}
+            """,
+            {
+                **update_params,
+                **identity.as_kwargs(),
+            },
+        )
+
+        return dst_run
+        
     # ---- private methods ----
     def _allocate_run_dir(self, experiment_name: str) -> Path:
         exp_dir = self.artifacts_root / experiment_name
@@ -362,6 +467,70 @@ class RunRegistry(RegistryDB):
         return exp_dir / f"{self._RUN_DIR_PREFIX}{next_id}"
     
     @staticmethod
-    def _identity_where(identity: RunIdentity) -> str:
+    def _build_identity_placeholders(identity: RunIdentity) -> str:
         """Build a WHERE clause from identity fields: 'col=:col AND ...'"""
         return " AND ".join(f"{col}=:{col}" for col in identity.as_kwargs())
+
+    @staticmethod
+    def _sync_dir_shutil(
+        *,
+        src: Path,
+        dst: Path,
+        wipe_dst: bool,
+    ) -> None:
+        
+        # (Optional) Wipe destination dir -> Make destination an exact mirror of source
+        if wipe_dst and dst.exists():
+            shutil.rmtree(dst)
+
+        dst.mkdir(parents=True, exist_ok=True)
+
+        # Copy src dir to dst dir
+        for src_path in src.rglob("*"):
+            rel_path = src_path.relative_to(src)
+            dst_path = dst / rel_path
+
+            if src_path.is_dir():
+                dst_path.mkdir(parents=True, exist_ok=True)
+                continue
+
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+
+    @staticmethod
+    def _sync_dir_rclone(
+        *,
+        src: Path,
+        dst: Path,
+        wipe_dst: bool,
+        rclone_executable: str,
+        extra_args: list[str],
+    ) -> None:
+        dst.mkdir(parents=True, exist_ok=True)
+
+        # NOTE:
+        ## rclone copy: adds/overwrites but never deletes anything on the dst
+        ## rclone sync: makes destination an exact mirror of source
+        cmd = [
+            rclone_executable,
+            "sync" if wipe_dst else "copy", 
+            str(src),
+            str(dst),
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(f"rclone executable not found: {rclone_executable}") from e
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            stdout = (e.stdout or "").strip()
+            details = stderr or stdout or str(e)
+            raise RuntimeError(f"rclone sync failed: {details}") from e

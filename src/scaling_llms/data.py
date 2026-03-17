@@ -350,6 +350,7 @@ def make_tokenized_dataset(
     local_eval_mmap_path: Path,
     local_hf_cache_dir: Path,
     local_tokenized_cache_dir: Path,
+    transfer_mode: str,
 ) -> Path:
     """
     TODO
@@ -420,6 +421,7 @@ def make_tokenized_dataset(
         src_path_eval_bin=local_eval_mmap_path,
         identity=dataset_id,
         dataset_info=dataset_info,
+        mode=transfer_mode,
         vocab_size=vocab_size,
         total_train_tokens=total_train_tokens,
         total_eval_tokens=total_eval_tokens,
@@ -531,7 +533,13 @@ def get_dataloaders(
     local_data_dir: Path | None = None,
     dataset_info: TokenizedDatasetInfo | None = None,
     run: Run | None = None,
+    transfer_mode: str = "shutil",
 ) -> dict[str, Any]:
+
+    if transfer_mode not in {"shutil", "rclone"}:
+        raise ValueError(
+            f"Invalid transfer_mode: {transfer_mode}. Expected one of: 'shutil', 'rclone'."
+        )
 
     logger = DataLogger(
         name="DataLoader",
@@ -565,6 +573,7 @@ def get_dataloaders(
             local_eval_mmap_path=local_eval_mmap_path,
             local_hf_cache_dir=local_data_paths.hf_cache_dir,
             local_tokenized_cache_dir=local_data_paths.tokenized_cache_dir,
+            transfer_mode=transfer_mode,
         )
 
     # STEP 3: Ensure local memmaps are available for dataloader creation
@@ -572,7 +581,11 @@ def get_dataloaders(
         logger.log_tokenization("Memmaps already exist locally, skipping copy from Data Registry.")
     else: 
         logger.log_tokenization("Memmaps not found locally, copying locally from Data Registry...")
-        data_registry.copy_dataset_to_local(registered_dataset_path, local_dataset_dir)        
+        data_registry.copy_dataset_to_local(
+            registered_dataset_path,
+            local_dataset_dir,
+            mode=transfer_mode,
+        )
 
     # Load dataset info from Data Registry
     dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
