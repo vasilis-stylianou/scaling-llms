@@ -1,8 +1,9 @@
-EXPERIMENT_NAME = "test_experiment_group"
+EXPERIMENT_NAME = "it_remote_runner_dev"
 
 RUNS = [
     {
-        "run_name": "group_run_1",
+        "run_name": "run_start",
+        "method": "start",
         "dataset_kwargs": {
             "dataset_name": "super_glue",
             "dataset_config": "cb",

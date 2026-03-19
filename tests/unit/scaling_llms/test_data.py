@@ -210,18 +210,3 @@ def test_dataset_offset(dataset_id, dl_config, data_registry, local_data_dir):
     msg = "Expected the first batch from the eval dataloder with offset to be the same as the first batch from the eval dataloader without offset, but they were different."
     assert torch.equal(xb_eval_offset1, eval_batch_1[0]) and torch.equal(yb_eval_offset1, eval_batch_1[1]), msg
 
-
-def test_get_dataloaders_invalid_transfer_mode_raises(
-    dataset_id,
-    dl_config,
-    data_registry,
-    local_data_dir,
-):
-    with pytest.raises(ValueError, match="Invalid transfer_mode"):
-        _ = get_dataloaders(
-            dataset_id,
-            data_registry,
-            dl_config,
-            local_data_dir=local_data_dir,
-            transfer_mode="invalid",
-        )

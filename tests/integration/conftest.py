@@ -74,14 +74,17 @@ class IntegrationConfig:
 
 @pytest.fixture(scope="session", autouse=True)
 def _gate_integration_tests() -> None:
-    enabled = os.getenv("RUNPOD_E2E") == "1"
-    if not enabled:
-        pytest.skip("Integration tests are disabled. Set RUNPOD_E2E=1 to enable.")
+    runpod_enabled = os.getenv("RUNPOD_E2E") == "1"
+    gdrive_enabled = os.getenv("RUN_GDRIVE_E2E") == "1"
+    if not (runpod_enabled or gdrive_enabled):
+        pytest.skip(
+            "Integration tests are disabled. Set RUNPOD_E2E=1 or RUN_GDRIVE_E2E=1 to enable."
+        )
 
-    if not os.getenv("RUNPOD_API_KEY"):
-        pytest.skip("RUNPOD_API_KEY is required for integration tests.")
-
-    configure_api_key_from_env()
+    if runpod_enabled:
+        if not os.getenv("RUNPOD_API_KEY"):
+            pytest.skip("RUNPOD_API_KEY is required for RunPod integration tests.")
+        configure_api_key_from_env()
 
 
 @pytest.fixture(scope="session")
