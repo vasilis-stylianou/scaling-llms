@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from scaling_llms.constants import (
     CKPT_FILES,
-    LOCAL_DATA_DIR,
-    LOCAL_DEV_DATA_DIR,
     METADATA_FILES,
     PROJECT_NAME,
     PROJECT_DEV_NAME,
 )
-from scaling_llms.data import DataLoaderConfig, get_dataloaders
+from scaling_llms.data import DataLoaderConfig, get_dataloaders_with_rclone
 from scaling_llms.models import GPTConfig, GPTModel
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.runs.identity import RunIdentity
@@ -22,7 +19,6 @@ from scaling_llms.storage.google_drive import (
     make_gdrive_data_registry,
     make_gdrive_run_registry,
 )
-from scaling_llms.storage.local_disk import LocalDiskConfigs, make_local_run_registry, setup_local_storage
 from scaling_llms.trainer import Trainer, TrainerConfig
 
 
@@ -49,20 +45,19 @@ def init_trainer(
     *,
     run: Any,
     data_registry: Any,
-    local_data_dir: str,
-    transfer_mode: str,
     dataset_id: DatasetIdentity,
     dl_cfg: DataLoaderConfig,
     trainer_cfg: TrainerConfig,
     gpt_hparams: dict[str, Any],
 ) -> Trainer:
-    dl_dict = get_dataloaders(
+    if getattr(data_registry, "storage", None) is None:
+        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
+
+    dl_dict = get_dataloaders_with_rclone(
         dataset_id=dataset_id,
-        data_registry=data_registry,
+        local_data_registry=data_registry,
+        remote_storage=data_registry.storage,
         dataloader_config=dl_cfg,
-        local_data_dir=local_data_dir,
-        run=run,
-        transfer_mode=transfer_mode,
     )
 
     run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
@@ -87,8 +82,6 @@ def trainer_from_checkpoint(
     *,
     run: Any,
     data_registry: Any,
-    local_data_dir: str,
-    transfer_mode: str,
     ckpt_filename: str,
     reset_state: bool,
 ) -> Trainer:
@@ -106,13 +99,14 @@ def trainer_from_checkpoint(
         overwrite_data={"start_sample_idx": trainer.step_idx},
     )
 
-    dl_dict = get_dataloaders(
+    if getattr(data_registry, "storage", None) is None:
+        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
+
+    dl_dict = get_dataloaders_with_rclone(
         dataset_id=dataset_id,
-        data_registry=data_registry,
+        local_data_registry=data_registry,
+        remote_storage=data_registry.storage,
         dataloader_config=dl_cfg,
-        local_data_dir=local_data_dir,
-        run=run,
-        transfer_mode=transfer_mode,
     )
 
     trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
@@ -155,8 +149,6 @@ def build_transfer_dataloaders(
     *,
     run: Any,
     data_registry: Any,
-    local_data_dir: str,
-    transfer_mode: str,
     dataset_kwargs: dict[str, Any],
     dataloader_kwargs: dict[str, Any],
 ) -> tuple[DatasetIdentity, DataLoaderConfig, dict[str, Any]]:
@@ -166,13 +158,14 @@ def build_transfer_dataloaders(
     run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
     run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
 
-    dl_dict = get_dataloaders(
+    if getattr(data_registry, "storage", None) is None:
+        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
+
+    dl_dict = get_dataloaders_with_rclone(
         dataset_id=dataset_id,
-        data_registry=data_registry,
+        local_data_registry=data_registry,
+        remote_storage=data_registry.storage,
         dataloader_config=dl_cfg,
-        local_data_dir=local_data_dir,
-        run=run,
-        transfer_mode=transfer_mode,
     )
     return dataset_id, dl_cfg, dl_dict
 
@@ -183,9 +176,6 @@ def build_transfer_dataloaders(
 
 
 class ExperimentRunner:
-    """
-    Single-registry experiment runner.
-    """
 
     def __init__(
         self,
@@ -193,14 +183,10 @@ class ExperimentRunner:
         exp_name: str,
         run_registry: Any,
         data_registry: Any,
-        local_data_dir: str,
-        transfer_mode: str = "rclone",
     ) -> None:
         self.exp_name = exp_name
         self.run_registry = run_registry
         self.data_registry = data_registry
-        self.local_data_dir = local_data_dir
-        self.transfer_mode = transfer_mode
 
     def start(
         self,
@@ -234,8 +220,6 @@ class ExperimentRunner:
             trainer = init_trainer(
                 run=run,
                 data_registry=self.data_registry,
-                local_data_dir=self.local_data_dir,
-                transfer_mode=self.transfer_mode,
                 dataset_id=dataset_id,
                 dl_cfg=dl_cfg,
                 trainer_cfg=trainer_cfg,
@@ -261,8 +245,6 @@ class ExperimentRunner:
             trainer = trainer_from_checkpoint(
                 run=run,
                 data_registry=self.data_registry,
-                local_data_dir=self.local_data_dir,
-                transfer_mode=self.transfer_mode,
                 ckpt_filename=ckpt_filename,
                 reset_state=False,
             )
@@ -302,8 +284,6 @@ class ExperimentRunner:
             _, _, dl_dict = build_transfer_dataloaders(
                 run=new_run,
                 data_registry=self.data_registry,
-                local_data_dir=self.local_data_dir,
-                transfer_mode=self.transfer_mode,
                 dataset_kwargs=dataset_kwargs,
                 dataloader_kwargs=dataloader_kwargs,
             )
@@ -343,289 +323,13 @@ class ExperimentRunner:
 
 
 # =============================================================================
-# Nested runner
-# =============================================================================
-
-
-class NestedExperimentRunner:
-    """
-    Nested runner:
-    - outer managed run = canonical remote lifecycle
-    - inner local run = fast training/logging workspace
-    """
-
-    def __init__(
-        self,
-        *,
-        exp_name: str,
-        remote_run_registry: Any,
-        local_run_registry: Any,
-        data_registry: Any,
-        local_data_dir: str,
-        transfer_mode: str = "rclone",
-    ) -> None:
-        self.exp_name = exp_name
-        self.remote_run_registry = remote_run_registry
-        self.local_run_registry = local_run_registry
-        self.data_registry = data_registry
-        self.local_data_dir = local_data_dir
-        self.transfer_mode = transfer_mode
-
-    def start(
-        self,
-        run_name: str,
-        dataset_kwargs: dict[str, Any],
-        dataloader_kwargs: dict[str, Any],
-        gpt_hparams: dict[str, Any],
-        trainer_kwargs: dict[str, Any],
-        max_steps: int | None = None,
-        overwrite: bool = False,
-        ignore_if_run_exists: bool = False,
-    ) -> Trainer | None:
-        identity = RunIdentity(self.exp_name, run_name)
-
-        if ignore_if_run_exists and self.remote_run_registry.run_exists(identity):
-            print(
-                f"Run {self.exp_name}/{run_name} already exists, "
-                "but ignore_if_run_exists=True, so ignoring and proceeding."
-            )
-            return None
-
-        dataset_id = DatasetIdentity(**dataset_kwargs)
-        dl_cfg = DataLoaderConfig(**dataloader_kwargs)
-        trainer_cfg = TrainerConfig(**trainer_kwargs)
-
-        with self.remote_run_registry.managed_run(
-            identity,
-            resume=False,
-            overwrite=overwrite,
-        ):
-            local_run = self.local_run_registry.create_run(
-                identity=identity,
-                resume=False,
-                overwrite=overwrite,
-            )
-
-            try:
-                local_run.start(resume=False)
-
-                trainer = init_trainer(
-                    run=local_run,
-                    data_registry=self.data_registry,
-                    local_data_dir=self.local_data_dir,
-                    transfer_mode=self.transfer_mode,
-                    dataset_id=dataset_id,
-                    dl_cfg=dl_cfg,
-                    trainer_cfg=trainer_cfg,
-                    gpt_hparams=gpt_hparams,
-                )
-
-                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
-                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
-
-                self.sync_local_to_remote(identity=identity, local_run=local_run)
-
-                trainer.train(max_steps=max_steps)
-
-                self.sync_local_to_remote(identity=identity, local_run=local_run)
-                return trainer
-
-            finally:
-                try:
-                    local_run.close()
-                finally:
-                    self.sync_local_to_remote(identity=identity, local_run=local_run)
-
-    def resume(
-        self,
-        run_name: str,
-        ckpt_filename: str = CKPT_FILES.best_ckpt,
-        max_steps: int | None = None,
-    ) -> Trainer:
-        identity = RunIdentity(self.exp_name, run_name)
-
-        with self.remote_run_registry.managed_run(
-            identity,
-            resume=True,
-            overwrite=False,
-        ) as remote_run:
-            local_run = self.local_run_registry.create_run(
-                identity=identity,
-                resume=True,
-                overwrite=False,
-            )
-
-            try:
-                local_run.start(resume=True)
-                self.sync_remote_to_local(identity=identity, remote_run=remote_run)
-
-                trainer = trainer_from_checkpoint(
-                    run=local_run,
-                    data_registry=self.data_registry,
-                    local_data_dir=self.local_data_dir,
-                    transfer_mode=self.transfer_mode,
-                    ckpt_filename=ckpt_filename,
-                    reset_state=False,
-                )
-
-                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
-                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
-
-                trainer.train(max_steps=max_steps)
-
-                self.sync_local_to_remote(identity=identity, local_run=local_run)
-                return trainer
-
-            finally:
-                try:
-                    local_run.close()
-                finally:
-                    self.sync_local_to_remote(identity=identity, local_run=local_run)
-
-    def start_from_checkpoint(
-        self,
-        run_name: str,
-        dataset_kwargs: dict[str, Any],
-        dataloader_kwargs: dict[str, Any],
-        ckpt_exp_name: str,
-        ckpt_run_name: str,
-        ckpt_filename: str,
-        max_steps: int | None = None,
-    ) -> Trainer:
-        identity = RunIdentity(self.exp_name, run_name)
-
-        with self.remote_run_registry.managed_run(
-            identity,
-            resume=False,
-            overwrite=False,
-        ):
-            local_run = self.local_run_registry.create_run(
-                identity=identity,
-                resume=False,
-                overwrite=False,
-            )
-
-            try:
-                local_run.start(resume=False)
-
-                local_run.log_metadata(
-                    {
-                        "initialized_from": {
-                            "exp": ckpt_exp_name,
-                            "run": ckpt_run_name,
-                            "ckpt": ckpt_filename,
-                        }
-                    },
-                    "source_checkpoint.json",
-                    format="json",
-                )
-
-                _, _, dl_dict = build_transfer_dataloaders(
-                    run=local_run,
-                    data_registry=self.data_registry,
-                    local_data_dir=self.local_data_dir,
-                    transfer_mode=self.transfer_mode,
-                    dataset_kwargs=dataset_kwargs,
-                    dataloader_kwargs=dataloader_kwargs,
-                )
-
-                source_identity = RunIdentity(ckpt_exp_name, ckpt_run_name)
-                with self.remote_run_registry.managed_run(
-                    source_identity,
-                    resume=True,
-                    overwrite=False,
-                ) as source_remote_run:
-                    source_local_run = self.local_run_registry.create_run(
-                        identity=source_identity,
-                        resume=True,
-                        overwrite=False,
-                    )
-
-                    try:
-                        source_local_run.start(resume=True)
-                        self.sync_remote_to_local(
-                            identity=source_identity,
-                            remote_run=source_remote_run,
-                        )
-
-                        validate_checkpoint_compatibility(
-                            source_run=source_local_run,
-                            target_run_name=run_name,
-                            target_exp_name=self.exp_name,
-                            target_dataloader_kwargs=dataloader_kwargs,
-                            target_dl_info=dl_dict["info"],
-                            delete_run_fn=self.delete_run,
-                        )
-
-                        trainer = Trainer.from_checkpoint(
-                            source_local_run,
-                            ckpt_name=ckpt_filename,
-                            train_dl=dl_dict["train"],
-                            eval_dl=dl_dict["eval"],
-                            reset_state=True,
-                        )
-                    finally:
-                        source_local_run.close()
-
-                trainer.attach_run(local_run)
-
-                self.remote_run_registry.set_device_name(identity, trainer.cfg.device_name)
-                self.local_run_registry.set_device_name(identity, trainer.cfg.device_name)
-
-                self.sync_local_to_remote(identity=identity, local_run=local_run)
-
-                trainer.train(max_steps=max_steps)
-
-                self.sync_local_to_remote(identity=identity, local_run=local_run)
-                return trainer
-
-            finally:
-                try:
-                    local_run.close()
-                finally:
-                    self.sync_local_to_remote(identity=identity, local_run=local_run)
-
-    def delete_experiment(self, confirm: bool = True) -> None:
-        self.remote_run_registry.delete_experiment(self.exp_name, confirm=confirm)
-        self.local_run_registry.delete_experiment(self.exp_name, confirm=False)
-
-    def delete_run(self, run_name: str, confirm: bool = True) -> None:
-        identity = RunIdentity(self.exp_name, run_name)
-        self.remote_run_registry.delete_run(identity, confirm=confirm)
-        self.local_run_registry.delete_run(identity, confirm=False)
-
-    def sync_local_to_remote(self, *, identity: RunIdentity, local_run: Any) -> None:
-        mode = "rclone" if self.remote_run_registry.storage is not None else "shutil"
-        src_run_state = self.local_run_registry.get_run_state(identity)
-        self.remote_run_registry.sync_run_from_local(
-            identity=identity,
-            src_run_dir=local_run.root,
-            src_run_state=src_run_state,
-            mode=mode,
-        )
-
-    def sync_remote_to_local(self, *, identity: RunIdentity, remote_run: Any) -> None:
-        mode = "rclone" if self.local_run_registry.storage is not None else "shutil"
-        src_run_state = self.remote_run_registry.get_run_state(identity)
-        self.local_run_registry.sync_run_from_local(
-            identity=identity,
-            src_run_dir=remote_run.root,
-            src_run_state=src_run_state,
-            mode=mode,
-        )
-
-
-# =============================================================================
 # Convenience factory
 # =============================================================================
 def make_gdrive_experiment_runner(
     exp_name: str,
     is_dev: bool = True,
-    transfer_mode: str = "rclone",
-    local_data_dir: Path | None = None,
 ) -> ExperimentRunner:
     project_subdir = PROJECT_DEV_NAME if is_dev else PROJECT_NAME
-    local_data_dir = local_data_dir or (LOCAL_DEV_DATA_DIR if is_dev else LOCAL_DATA_DIR)
 
     remote_run_registry = make_gdrive_run_registry(project_subdir=project_subdir)
     data_registry = make_gdrive_data_registry(project_subdir=project_subdir)
@@ -634,30 +338,4 @@ def make_gdrive_experiment_runner(
         exp_name=exp_name,
         run_registry=remote_run_registry,
         data_registry=data_registry,
-        local_data_dir=local_data_dir,
-        transfer_mode=transfer_mode,
-    )
-
-
-def make_gdrive_local_disk_nested_experiment_runner(
-    exp_name: str,
-    project_root: str,
-    is_dev: bool = True,
-    transfer_mode: str = "rclone"
-) -> NestedExperimentRunner:
-    project_subdir = PROJECT_DEV_NAME if is_dev else PROJECT_NAME
-
-    remote_run_registry = make_gdrive_run_registry(project_subdir=project_subdir)
-    local_cfg = LocalDiskConfigs(project_root=project_root)
-    local_storage = setup_local_storage(local_cfg)
-    local_run_registry = make_local_run_registry(configs=local_cfg)
-    data_registry = make_gdrive_data_registry(project_subdir=project_subdir)
-
-    return NestedExperimentRunner(
-        exp_name=exp_name,
-        remote_run_registry=remote_run_registry,
-        local_run_registry=local_run_registry,
-        data_registry=data_registry,
-        local_data_dir=local_storage.data_registry_root,
-        transfer_mode=transfer_mode,
     )

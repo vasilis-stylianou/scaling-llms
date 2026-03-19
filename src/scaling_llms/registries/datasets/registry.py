@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +8,7 @@ import pandas as pd
 
 from scaling_llms.constants import DATASET_FILES
 from scaling_llms.registries.core.db import RegistryDB
-from scaling_llms.registries.core.helpers import get_next_id, get_local_iso_timestamp
+from scaling_llms.registries.core.helpers import get_local_iso_timestamp, make_unique_dir
 from scaling_llms.registries.datasets.identity import DatasetIdentity
 from scaling_llms.registries.datasets.schema import TABLE_SPECS
 from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, TokenizedDatasetInfo
@@ -23,8 +21,6 @@ class DataRegistry(RegistryDB):
     Registry for dataset artifacts stored under a datasets/ directory.
     Tracks dataset metadata in an SQLite DB.
     """
-
-    _DATASET_PREFIX = "dataset_"
 
     def __init__(
         self, 
@@ -60,10 +56,6 @@ class DataRegistry(RegistryDB):
         dataset_path: str | Path,
         local_path: str | Path,
         overwrite: bool = False,
-        *,
-        mode: str = "shutil",
-        rclone_executable: str = "rclone",
-        rclone_extra_args: list[str] | None = None,
     ) -> tuple[Path, Path]:
         """
         Copy train.bin and eval.bin from a dataset directory to a local directory.
@@ -86,9 +78,6 @@ class DataRegistry(RegistryDB):
         train_dst = dst_dir / DATASET_FILES.train_tokens
         eval_dst = dst_dir / DATASET_FILES.eval_tokens
 
-        if mode not in {"shutil", "rclone"}:
-            raise ValueError(f"Invalid transfer mode: {mode}")
-
         if train_dst.exists() and not overwrite:
             raise FileExistsError(f"Destination already exists: {train_dst}")
         if eval_dst.exists() and not overwrite:
@@ -99,22 +88,8 @@ class DataRegistry(RegistryDB):
         if eval_dst.exists():
             eval_dst.unlink()
 
-        if mode == "shutil":
-            shutil.copy2(src.train_bin, train_dst)
-            shutil.copy2(src.eval_bin, eval_dst)
-        elif mode == "rclone":
-            self._copy_file_rclone(
-                src=src.train_bin,
-                dst=train_dst,
-                rclone_executable=rclone_executable,
-                extra_args=rclone_extra_args or [],
-            )
-            self._copy_file_rclone(
-                src=src.eval_bin,
-                dst=eval_dst,
-                rclone_executable=rclone_executable,
-                extra_args=rclone_extra_args or [],
-            )
+        shutil.copy2(src.train_bin, train_dst)
+        shutil.copy2(src.eval_bin, eval_dst)
 
         return train_dst, eval_dst
 
@@ -157,14 +132,8 @@ class DataRegistry(RegistryDB):
         src_path_eval_bin: str | Path,
         identity: DatasetIdentity,
         dataset_info: TokenizedDatasetInfo | None = None,
-        mode: str = "shutil",
-        rclone_executable: str = "rclone",
-        rclone_extra_args: list[str] | None = None,
         **kwargs,
     ) -> Path:
-        if mode not in {"shutil", "rclone"}:
-            raise ValueError(f"Invalid transfer mode: {mode}")
-
         if self.dataset_exists(identity):
             raise FileExistsError("Dataset with the same metadata already exists.")
 
@@ -176,28 +145,13 @@ class DataRegistry(RegistryDB):
         if not src_eval.exists():
             raise FileNotFoundError(f"Eval bin not found: {src_eval}")
 
-        # Create new dataset dir (dataset_<N>)
-        dataset_dir = self._make_dataset_dir()
+        # Create new dataset directory
+        dataset_dir = self.make_dataset_dir()
         dst = DatasetArtifacts(dataset_dir)
         dst.ensure_dir()
 
-        # Copy files to dataset dir
-        if mode == "shutil":
-            shutil.copy2(src_train, dst.train_bin)
-            shutil.copy2(src_eval, dst.eval_bin)
-        elif mode == "rclone":
-            self._copy_file_rclone(
-                src=src_train,
-                dst=dst.train_bin,
-                rclone_executable=rclone_executable,
-                extra_args=rclone_extra_args or [],
-            )
-            self._copy_file_rclone(
-                src=src_eval,
-                dst=dst.eval_bin,
-                rclone_executable=rclone_executable,
-                extra_args=rclone_extra_args or [],
-            )
+        shutil.copy2(src_train, dst.train_bin)
+        shutil.copy2(src_eval, dst.eval_bin)
 
         if dataset_info is not None:
             log_as_json(dataset_info, dst.dataset_info)
@@ -249,42 +203,7 @@ class DataRegistry(RegistryDB):
             {"artifacts_path": str(rel_path.as_posix())},
         )
 
-    # --- internal ---
-    def _make_dataset_dir(self) -> Path:
-        next_id = get_next_id(self._DATASET_PREFIX, self.artifacts_root)
-        dataset_dir = self.artifacts_root / f"{self._DATASET_PREFIX}{next_id}"
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        return dataset_dir
-
-    @staticmethod
-    def _copy_file_rclone(
-        *,
-        src: Path,
-        dst: Path,
-        rclone_executable: str,
-        extra_args: list[str],
-    ) -> None:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            rclone_executable,
-            "copyto",
-            str(src),
-            str(dst),
-        ]
-        if extra_args:
-            cmd.extend(extra_args)
-
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as e:
-            raise RuntimeError(f"rclone executable not found: {rclone_executable}") from e
-        except subprocess.CalledProcessError as e:
-            stderr = (e.stderr or "").strip()
-            stdout = (e.stdout or "").strip()
-            details = stderr or stdout or str(e)
-            raise RuntimeError(f"rclone copy failed: {details}") from e
+    def make_dataset_dir(self) -> Path:
+        return make_unique_dir(
+            parent_dir=self.artifacts_root,
+        )

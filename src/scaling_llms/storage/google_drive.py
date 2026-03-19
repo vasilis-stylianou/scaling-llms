@@ -12,18 +12,23 @@ from scaling_llms.constants import (
     COLAB_DRIVE_SUBDIR,
 )
 
-from scaling_llms.storage.base import RegistryStorage
+from scaling_llms.storage.base import DefaultRegistryStorage, RegistryStorage
 from scaling_llms.registries.runs.registry import RunRegistry
 from scaling_llms.registries.datasets.registry import DataRegistry
 
 
 # ---------------------------
-# GOOGLE DRIVE DEFAULTS
+# GOOGLE DRIVE DEFAULTS (LEGACY MOUNT MODE)
 # ----------------------------------------------------------
 @dataclass(frozen=True)
 class GoogleDriveDefaults:
     """
-    Example structure on Google Drive:
+    Legacy mount-backed layout (local-debug compatibility only).
+
+    This module now treats Google Drive mounts as a compatibility path.
+    Active training/registry operations should prefer local disk plus rclone sync.
+
+    Expected structure when mounted:
 
     {mountpoint}/{drive_subdir}/{project_subdir}/
     ├── data_registry/
@@ -44,12 +49,6 @@ class GoogleDriveDefaults:
 
     # ENV-INDEPENDENT defaults (no os.environ access at import time)
     project_subdir: str = PROJECT_NAME
-    run_registry_name: str = "run_registry"
-    runs_db_name: str = "runs.db"
-    runs_artifacts_subdir: str = "artifacts"
-    data_registry_name: str = "data_registry"
-    datasets_db_name: str = "datasets.db"
-    datasets_artifacts_subdir: str = "tokenized_datasets"
 
     # Possible env-specific mount settings (selection happens in configs)
     desktop_mountpoint: Path = Path(DESKTOP_DRIVE_MOUNTPOINT)
@@ -70,21 +69,22 @@ class GoogleDriveConfigs:
     mountpoint: str | Path | None = None
     drive_subdir: str | None = None
     project_subdir: str | None = None
-    run_registry_name: str | None = None
-    runs_db_name: str | None = None
-    runs_artifacts_subdir: str | None = None
-    data_registry_name: str | None = None
-    datasets_db_name: str | None = None
-    datasets_artifacts_subdir: str | None = None
 
-    auto_mount: bool = True
+    # Deprecated/legacy knobs kept only for backward-compat constructor calls.
+    auto_mount: bool = False
     force_remount: bool = False
 
 
-def setup_drive_storage(config: GoogleDriveConfigs = GoogleDriveConfigs()) -> RegistryStorage:
+def setup_legacy_drive_storage(config: GoogleDriveConfigs = GoogleDriveConfigs()) -> RegistryStorage:
     """
-    Factory function: resolves paths, mounts drive if needed, creates directories,
-    and returns a pure Storage object.
+    Resolve storage paths on an already-mounted Google Drive filesystem.
+
+    Legacy-only behavior:
+    - Does NOT auto-mount
+    - Does NOT create missing mountpoint/drive-root directories
+    - Raises RuntimeError when mount path is unavailable
+
+    For cloud/RunPod workflows, use local registries + rclone sync utilities.
     """
     env = os.environ.get("SCALING_LLMS_ENV", "local")
 
@@ -101,63 +101,47 @@ def setup_drive_storage(config: GoogleDriveConfigs = GoogleDriveConfigs()) -> Re
     mountpoint = Path(mountpoint_str)
     drive_root = mountpoint / drive_subdir
 
-    # 2. Perform Side Effects (Mounting & Mkdir)
+    if not mountpoint.exists():
+        raise RuntimeError(
+            "Google Drive mountpoint does not exist. Mount-backed storage is legacy-only. "
+            "Use local disk registries with rclone sync for cloud workflows. "
+            f"Missing mountpoint: {mountpoint}"
+        )
+
     if not drive_root.exists():
-        if env == "colab" and config.auto_mount:
-            try:
-                from google.colab import drive  # type: ignore
-                drive.mount(str(mountpoint), force_remount=config.force_remount)
-            except ImportError as exc:
-                raise RuntimeError("Not in Colab or google.colab unavailable.") from exc
-                
-        drive_root.mkdir(parents=True, exist_ok=True)
+        raise RuntimeError(
+            "Google Drive root path does not exist under mountpoint. "
+            "Mount-backed storage is legacy/local-debug only. "
+            f"Missing path: {drive_root}"
+        )
 
     project_subdir = config.project_subdir or config.defaults.project_subdir
     project_root = drive_root / project_subdir
     project_root.mkdir(parents=True, exist_ok=True)
 
-    # 3. Resolve the rest of the names (no side effects needed here)
-    run_reg_name = config.run_registry_name or config.defaults.run_registry_name
-    run_reg_root = project_root / run_reg_name
-
-    data_reg_name = config.data_registry_name or config.defaults.data_registry_name
-    data_reg_root = project_root / data_reg_name
-
-    # 4. Return the clean, finalized Storage object
-    return RegistryStorage(
+    return DefaultRegistryStorage(
         project_root=project_root,
-        
-        run_registry_root=run_reg_root,
-        runs_artifacts_root=run_reg_root / (config.runs_artifacts_subdir or config.defaults.runs_artifacts_subdir),
-        runs_db_path=run_reg_root / (config.runs_db_name or config.defaults.runs_db_name),
-        
-        data_registry_root=data_reg_root,
-        datasets_db_path=data_reg_root / (config.datasets_db_name or config.defaults.datasets_db_name),
-        datasets_artifacts_root=data_reg_root / (config.datasets_artifacts_subdir or config.defaults.datasets_artifacts_subdir),
-    )
+    ).to_registry_storage(create_dirs=True)
+
+
+def setup_drive_storage(config: GoogleDriveConfigs = GoogleDriveConfigs()) -> RegistryStorage:
+    """Compatibility wrapper for legacy mount-backed Google Drive storage."""
+    return setup_legacy_drive_storage(config)
 
 
 # ----------------------------------------------------------
 # CONVENIENCE FACTORIES
 # ----------------------------------------------------------
 def make_gdrive_run_registry(configs: GoogleDriveConfigs | None = None, **overrides):
-    # 1. Create the raw configuration
+    # Legacy compatibility wrapper: mounted filesystem mode only.
     config = configs or GoogleDriveConfigs(**overrides)
-    
-    # 2. Execute side-effects and resolve paths safely
-    registry_storage = setup_drive_storage(config)
-    
-    # 3. Pass the resolved, frozen storage to your registry
+    registry_storage = setup_legacy_drive_storage(config)
     return RunRegistry.from_storage(registry_storage)
 
 
 def make_gdrive_data_registry(configs: GoogleDriveConfigs | None = None, **overrides):
-    # 1. Create the raw configuration
+    # Legacy compatibility wrapper: mounted filesystem mode only.
     config = configs or GoogleDriveConfigs(**overrides)
-    
-    # 2. Execute side-effects and resolve paths safely
-    registry_storage = setup_drive_storage(config)
-    
-    # 3. Pass the resolved, frozen storage to your registry
+    registry_storage = setup_legacy_drive_storage(config)
     return DataRegistry.from_storage(registry_storage)
 
