@@ -11,10 +11,10 @@ from scaling_llms.constants import (
     PROJECT_NAME,
     PROJECT_DEV_NAME,
 )
-from scaling_llms.data import DataLoaderConfig, get_dataloaders_with_rclone
+from scaling_llms.data import DataLoaderConfig, get_dataloaders
 from scaling_llms.models import GPTConfig, GPTModel
-from scaling_llms.registries.datasets.identity import DatasetIdentity
-from scaling_llms.registries.runs.identity import RunIdentity
+from scaling_llms.registries.datasets.metadata import DatasetIdentity
+from scaling_llms.registries.runs.metadata import RunIdentity
 from scaling_llms.storage.google_drive import (
     make_gdrive_data_registry,
     make_gdrive_run_registry,
@@ -50,13 +50,9 @@ def init_trainer(
     trainer_cfg: TrainerConfig,
     gpt_hparams: dict[str, Any],
 ) -> Trainer:
-    if getattr(data_registry, "storage", None) is None:
-        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
-
-    dl_dict = get_dataloaders_with_rclone(
+    dl_dict = get_dataloaders(
         dataset_id=dataset_id,
-        local_data_registry=data_registry,
-        remote_storage=data_registry.storage,
+        data_registry=data_registry,
         dataloader_config=dl_cfg,
     )
 
@@ -99,13 +95,9 @@ def trainer_from_checkpoint(
         overwrite_data={"start_sample_idx": trainer.step_idx},
     )
 
-    if getattr(data_registry, "storage", None) is None:
-        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
-
-    dl_dict = get_dataloaders_with_rclone(
+    dl_dict = get_dataloaders(
         dataset_id=dataset_id,
-        local_data_registry=data_registry,
-        remote_storage=data_registry.storage,
+        data_registry=data_registry,
         dataloader_config=dl_cfg,
     )
 
@@ -158,13 +150,9 @@ def build_transfer_dataloaders(
     run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
     run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
 
-    if getattr(data_registry, "storage", None) is None:
-        raise RuntimeError("data_registry.storage is required for rclone dataloaders")
-
-    dl_dict = get_dataloaders_with_rclone(
+    dl_dict = get_dataloaders(
         dataset_id=dataset_id,
-        local_data_registry=data_registry,
-        remote_storage=data_registry.storage,
+        data_registry=data_registry,
         dataloader_config=dl_cfg,
     )
     return dataset_id, dl_cfg, dl_dict

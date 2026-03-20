@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from scaling_llms.constants import METRIC_CATS
-from scaling_llms.registries.runs.artifacts import RunArtifacts
+from scaling_llms.registries.runs.artifacts import RunArtifactsDir
 from scaling_llms.utils.loggers import BaseLogger
 from scaling_llms.utils.io import (
     log_as_json, 
@@ -22,17 +22,17 @@ from scaling_llms.tracking.trackers import (
 class Run:
     """
     Runtime session object.
-    Owns trackers; uses RunArtifacts for paths.
+    Owns trackers; uses RunArtifactsDir for paths.
     """
 
     logger = BaseLogger(name="Run")
 
     def __init__(
         self,
-        run_artifacts: RunArtifacts,
+        artifacts_dir: RunArtifactsDir,
         metric_categories: Iterable[str] | None = None,
     ):
-        self.artifacts = run_artifacts
+        self.artifacts_dir = artifacts_dir
         self.metric_categories = (
             list(metric_categories)
             if metric_categories is not None
@@ -40,11 +40,11 @@ class Run:
         )
 
         # Expose some convenient properties for direct access
-        self.root = run_artifacts.root
-        self.metrics_dir = run_artifacts.metrics
-        self.metadata_dir = run_artifacts.metadata
-        self.checkpoints_dir = run_artifacts.checkpoints
-        self.tb_dir = run_artifacts.tb
+        self.root = artifacts_dir.root
+        self.metrics_dir = artifacts_dir.metrics
+        self.metadata_dir = artifacts_dir.metadata
+        self.checkpoints_dir = artifacts_dir.checkpoints
+        self.tb_dir = artifacts_dir.tb
 
         # Trackers are lazily initialized on first use, so that we don't create any files until we have to.
         self._metrics_tracker_dict: TrackerDict | None = None
@@ -102,7 +102,7 @@ class Run:
         if not filename.endswith(f".{format}"):
             filename = f"{filename}.{format}"
 
-        path = self.artifacts.metadata_path(
+        path = self.artifacts_dir.metadata_path(
             filename,
             subdir_name=subdir_name,
             ensure_dir=True,

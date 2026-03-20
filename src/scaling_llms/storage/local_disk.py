@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scaling_llms.registries.datasets.registry import DataRegistry
+from scaling_llms.registries.runs.artifacts import RunArtifacts
+from scaling_llms.registries.runs.metadata import RunMetadata
 from scaling_llms.registries.runs.registry import RunRegistry
 from scaling_llms.storage.base import DefaultRegistryStorage, RegistryStorage
 
@@ -24,7 +26,10 @@ def make_local_run_registry(configs: LocalDiskConfigs | None = None, **overrides
         raise ValueError("project_root must be provided explicitly.")
     config = configs or LocalDiskConfigs(**overrides)
     storage = setup_local_storage(config)
-    return RunRegistry.from_storage(storage)
+    return RunRegistry(
+        metadata=RunMetadata(),
+        artifacts=RunArtifacts(storage.runs_artifacts_root),
+    )
 
 
 def make_local_data_registry(configs: LocalDiskConfigs | None = None, **overrides) -> DataRegistry:

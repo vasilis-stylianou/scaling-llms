@@ -1,12 +1,23 @@
-import sqlite3
-from pathlib import Path
+import re
+from collections.abc import Sequence
+
+import psycopg
 
 from scaling_llms.registries.core.schema import TableSpec
 
 
-def _has_column(con: sqlite3.Connection, table: str, column: str) -> bool:
-    rows = con.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(r[1] == column for r in rows)
+def _has_column(cur: psycopg.Cursor, table: str, column: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = %s
+          AND column_name = %s
+        """,
+        (table, column),
+    )
+    return cur.fetchone() is not None
 
 
 def _is_nullish_default(default_sql) -> bool:
@@ -23,36 +34,64 @@ def _ddl_fragment_force_nullable(col) -> str:
     return frag
 
 
-def migrate(db_path: str | Path, table_specs: list[TableSpec]) -> None:
-    db_path = Path(db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+def _primary_key_columns(primary_key_sql: str | None) -> tuple[str, ...]:
+    if not primary_key_sql:
+        return ()
+    m = re.search(r"PRIMARY\s+KEY\s*\(([^)]+)\)", primary_key_sql, flags=re.IGNORECASE)
+    if not m:
+        return ()
+    cols = [c.strip() for c in m.group(1).split(",") if c.strip()]
+    return tuple(cols)
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.execute("BEGIN;")
 
-        for spec in table_specs:
-            con.execute(spec.create_table_sql())
+def _normalize_table_specs(table_spec: TableSpec | Sequence[TableSpec]) -> tuple[TableSpec, ...]:
+    if isinstance(table_spec, TableSpec):
+        return (table_spec,)
+    return tuple(table_spec)
 
-            for col in spec.columns:
-                if _has_column(con, spec.name, col.name):
-                    continue
+# TODO: I think this could move to backend
+def migrate(database_url: str | None, table_spec: TableSpec | Sequence[TableSpec]) -> None:
+    if not database_url:
+        raise ValueError(
+            "DATABASE_URL must be set to run registry schema migration."
+        )
 
-                # SQLite cannot ADD COLUMN ... NOT NULL without a non-NULL DEFAULT
-                ddl = col.ddl_fragment()
-                if (col.nullable is False) and _is_nullish_default(col.default_sql):
-                    ddl = _ddl_fragment_force_nullable(col)
+    table_specs = _normalize_table_specs(table_spec)
 
-                con.execute(f"ALTER TABLE {spec.name} ADD COLUMN {ddl};")
+    with psycopg.connect(database_url, autocommit=False) as con:
+        with con.cursor() as cur:
+            for spec in table_specs:
+                cur.execute(spec.create_table_sql())
 
-                # Backfill defaults for existing rows
-                if not _is_nullish_default(col.default_sql):
-                    con.execute(
-                        f"UPDATE {spec.name} "
-                        f"SET {col.name} = {col.default_sql} "
-                        f"WHERE {col.name} IS NULL;"
+                for col in spec.columns:
+                    if _has_column(cur, spec.name, col.name):
+                        continue
+
+                    ddl = col.ddl_fragment()
+                    if (col.nullable is False) and _is_nullish_default(col.default_sql):
+                        ddl = _ddl_fragment_force_nullable(col)
+
+                    cur.execute(
+                        f"ALTER TABLE {spec.name} ADD COLUMN IF NOT EXISTS {ddl};"
                     )
 
-            for idx in spec.indexes:
-                con.execute(idx.ddl(spec.name))
+                    if not _is_nullish_default(col.default_sql):
+                        cur.execute(
+                            f"UPDATE {spec.name} "
+                            f"SET {col.name} = {col.default_sql} "
+                            f"WHERE {col.name} IS NULL;"
+                        )
 
-        con.execute("COMMIT;")
+                for idx in spec.indexes:
+                    cur.execute(idx.ddl(spec.name))
+
+                pk_cols = _primary_key_columns(spec.primary_key_sql)
+                if pk_cols:
+                    pk_cols_sql = ", ".join(pk_cols)
+                    pk_idx_name = f"idx_{spec.name}_pk"
+                    cur.execute(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS {pk_idx_name} "
+                        f"ON {spec.name} ({pk_cols_sql});"
+                    )
+
+        con.commit()

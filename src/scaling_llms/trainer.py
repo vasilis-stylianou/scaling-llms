@@ -241,7 +241,7 @@ class Trainer:
             Trainer instance restored from checkpoint
         """
         # Load trainer configs from metadata dir
-        cfg = TrainerConfig.from_json(run.artifacts.metadata_path(METADATA_FILES.trainer_config))
+        cfg = TrainerConfig.from_json(run.artifacts_dir.metadata_path(METADATA_FILES.trainer_config))
         
         # Auto-instantiate model if not provided
         model = model or instantiate_model_from_run(run)
@@ -250,7 +250,7 @@ class Trainer:
         trainer = cls(cfg=cfg, model=model, train_dl=train_dl, eval_dl=eval_dl, run=run)
 
         # Configure Trainer's state
-        ckpt_path = run.artifacts.checkpoint_path(ckpt_name)
+        ckpt_path = run.artifacts_dir.checkpoint_path(ckpt_name)
         trainer_state = trainer.ckpt_manager.load(
             ckpt_path, 
             strict=strict, 

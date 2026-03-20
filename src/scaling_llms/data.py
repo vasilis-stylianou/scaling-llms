@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,11 +22,9 @@ from scaling_llms.constants import (
     METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
 )
-from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, TokenizedDatasetInfo
-from scaling_llms.registries.datasets.identity import DatasetIdentity
+from scaling_llms.registries.datasets.artifacts import TokenizedDatasetInfo
+from scaling_llms.registries.datasets.metadata import DatasetIdentity
 from scaling_llms.registries.datasets.registry import DataRegistry
-from scaling_llms.storage.base import RegistryStorage
-from scaling_llms.storage.rclone import sync_local_to_remote, sync_remote_to_local
 from scaling_llms.tracking.run import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger
@@ -527,103 +524,6 @@ class LocalDataPaths:
         return self.dataset_dir(dataset_id) / DATASET_FILES.eval_tokens
 
 
-def ensure_local_datasets_with_rclone(
-    *,
-    dataset_id: DatasetIdentity,
-    local_data_registry: DataRegistry,
-    remote_storage: RegistryStorage,
-    rclone_executable: str = "rclone",
-    rclone_extra_args: list[str] | None = None,
-) -> Path:
-    # Update local registry with remote datasets DB (lightweight, just metadata)
-    sync_remote_to_local(
-        remote_path=str(remote_storage.datasets_db_path),
-        local_path=local_data_registry.root,
-        mode="copy",
-        rclone_executable=rclone_executable,
-        extra_args=rclone_extra_args,
-    )
-
-    # If dataset not in registry, build locally and upload to remote
-    if not local_data_registry.dataset_exists(dataset_id):
-        with tempfile.TemporaryDirectory(prefix="dataset_build_") as tmp_dir:
-            tmp_root = Path(tmp_dir)
-            local_train_mmap_path = tmp_root / DATASET_FILES.train_tokens
-            local_eval_mmap_path = tmp_root / DATASET_FILES.eval_tokens
-            local_hf_cache_dir = tmp_root / HF_CACHE_DIR_NAME
-            local_tokenized_cache_dir = tmp_root / TOKENIZED_CACHE_DIR_NAME
-
-            local_dataset_path = make_tokenized_dataset(
-                dataset_id=dataset_id,
-                data_registry=local_data_registry,
-                local_train_mmap_path=local_train_mmap_path,
-                local_eval_mmap_path=local_eval_mmap_path,
-                local_hf_cache_dir=local_hf_cache_dir,
-                local_tokenized_cache_dir=local_tokenized_cache_dir,
-            )
-
-        sync_local_to_remote(
-            local_path=local_data_registry.root,
-            remote_path=str(remote_storage.data_registry_root),
-            mode="copy",
-            rclone_executable=rclone_executable,
-            extra_args=rclone_extra_args,
-        )
-        return local_dataset_path
-
-    # If dataset already in registry, ensure it's available locally by copying from remote if needed
-    local_dataset_path = local_data_registry.find_dataset_path(dataset_id, raise_if_not_found=True)
-    if not local_dataset_path.exists():
-        relative_dataset_path = local_dataset_path.relative_to(local_data_registry.artifacts_root)
-        remote_dataset_path = Path(remote_storage.datasets_artifacts_root) / relative_dataset_path
-        sync_remote_to_local(
-            remote_path=str(remote_dataset_path),
-            local_path=local_dataset_path,
-            mode="copy",
-            rclone_executable=rclone_executable,
-            extra_args=rclone_extra_args,
-        )
-
-    return local_dataset_path
-
-
-def get_dataloaders_with_rclone(
-    dataset_id: DatasetIdentity,
-    local_data_registry: DataRegistry,
-    remote_storage: RegistryStorage,
-    dataloader_config: DataLoaderConfig,
-    rclone_executable: str = "rclone",
-    rclone_extra_args: list[str] | None = None,
-) -> dict[str, Any]:
-
-    local_dataset_path = ensure_local_datasets_with_rclone(
-        dataset_id=dataset_id,
-        local_data_registry=local_data_registry,
-        remote_storage=remote_storage,
-        rclone_executable=rclone_executable,
-        rclone_extra_args=rclone_extra_args,
-    )
-
-    dataset_info = local_data_registry.get_dataset_info(dataset_id)
-    dtype = np.dtype(dataset_info.dtype)
-
-    local_artifacts = DatasetArtifacts(local_dataset_path)
-    dls = make_dataloaders(
-        local_train_mmap_path=local_artifacts.train_bin,
-        local_eval_mmap_path=local_artifacts.eval_bin,
-        dtype=dtype,
-        dataloader_config=dataloader_config,
-    )
-
-    output_info = dict(**asdict(dataset_info), **asdict(dataloader_config))
-
-    return {
-        "train": dls["train"],
-        "eval": dls["eval"],
-        "info": output_info,
-    }
-    
-
 def get_dataloaders(
     dataset_id: DatasetIdentity,
     data_registry: DataRegistry,
@@ -650,7 +550,6 @@ def get_dataloaders(
     local_data_paths = LocalDataPaths(**override_kwargs)
     local_train_mmap_path = local_data_paths.train_mmap_path(dataset_id)
     local_eval_mmap_path = local_data_paths.eval_mmap_path(dataset_id)
-    local_dataset_dir = local_data_paths.dataset_dir(dataset_id)
 
     # STEP 2: Create tokenized dataset and register in Data Registry if not already present
     if data_registry.dataset_exists(dataset_id):
@@ -667,16 +566,6 @@ def get_dataloaders(
             local_tokenized_cache_dir=local_data_paths.tokenized_cache_dir,
         )
 
-    # STEP 3: Ensure local memmaps are available for dataloader creation
-    if local_train_mmap_path.exists() and local_eval_mmap_path.exists():
-        logger.log_tokenization("Memmaps already exist locally, skipping copy from Data Registry.")
-    else: 
-        logger.log_tokenization("Memmaps not found locally, copying locally from Data Registry...")
-        data_registry.copy_dataset_to_local(
-            registered_dataset_path,
-            local_dataset_dir,
-        )
-
     # Load dataset info from Data Registry
     dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
     dtype = np.dtype(dataset_info.dtype)
@@ -688,8 +577,8 @@ def get_dataloaders(
         "and sequential evaluation dataset with non-overlapping chunks..."
     )
     dls = make_dataloaders(
-        local_train_mmap_path=local_train_mmap_path,
-        local_eval_mmap_path=local_eval_mmap_path,
+        local_train_mmap_path=registered_dataset_path / DATASET_FILES.train_tokens,
+        local_eval_mmap_path=registered_dataset_path / DATASET_FILES.eval_tokens,
         dtype=dtype,
         dataloader_config=dataloader_config
     )
@@ -707,95 +596,3 @@ def get_dataloaders(
         "eval": dls["eval"],
         "info": output_info,
     }
-
-# def get_dataloaders(
-#     dataset_id: DatasetIdentity,
-#     data_registry: DataRegistry,
-#     dataloader_config: DataLoaderConfig,
-#     local_data_dir: Path | None = None,
-#     dataset_info: TokenizedDatasetInfo | None = None,
-#     run: Run | None = None,
-#     use_mount: bool = False,
-# ) -> dict[str, Any]:
-
-#     transfer_mode = "shutil" if use_mount else "rclone"
-
-    
-#     logger = DataLogger(
-#         name="DataLoader",
-#         file_name=str(METADATA_FILES.data_log) if run is not None else None,
-#         log_dir=run.metadata_dir if run is not None else None,
-#         level=logging.INFO,
-#     )
-
-#     logger.log_dataset_id(dataset_id)
-#     logger.log_dataloader_config(dataloader_config)    
-
-#     # STEP 1: Prepare local paths for token memmaps 
-#     # NOTE: these are the source for dataloader creation and also used for registry registration, 
-#     # but the canonical "source of truth" for the dataset is the Data Registry.
-#     override_kwargs = {} if local_data_dir is None else {"local_data_dir": local_data_dir}
-#     local_data_paths = LocalDataPaths(**override_kwargs)
-#     local_train_mmap_path = local_data_paths.train_mmap_path(dataset_id)
-#     local_eval_mmap_path = local_data_paths.eval_mmap_path(dataset_id)
-#     local_dataset_dir = local_data_paths.dataset_dir(dataset_id)
-
-#     # STEP 2: Create tokenized dataset and register in Data Registry if not already present
-#     if data_registry.dataset_exists(dataset_id):
-#         logger.log_tokenization("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
-#         registered_dataset_path = data_registry.find_dataset_path(dataset_id, raise_if_not_found=True)
-#     else:
-#         logger.log_tokenization("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
-#         registered_dataset_path = make_tokenized_dataset(
-#             dataset_id=dataset_id,
-#             data_registry=data_registry,
-#             local_train_mmap_path=local_train_mmap_path,
-#             local_eval_mmap_path=local_eval_mmap_path,
-#             local_hf_cache_dir=local_data_paths.hf_cache_dir,
-#             local_tokenized_cache_dir=local_data_paths.tokenized_cache_dir,
-#             transfer_mode=transfer_mode,
-#         )
-
-#     # STEP 3: Ensure local memmaps are available for dataloader creation
-#     if local_train_mmap_path.exists() and local_eval_mmap_path.exists():
-#         logger.log_tokenization("Memmaps already exist locally, skipping copy from Data Registry.")
-#     else: 
-#         logger.log_tokenization("Memmaps not found locally, copying locally from Data Registry...")
-#         data_registry.copy_dataset_to_local(
-#             registered_dataset_path,
-#             local_dataset_dir,
-#         )
-
-#     # Load dataset info from Data Registry
-#     dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
-#     dtype = np.dtype(dataset_info.dtype)
-#     logger.log_dataset_info(dataset_info)
-    
-#     # STEP 4: Create dataloaders
-#     logger.log_dataloader_creation(
-#         "Creating deterministic training dataset with random windows "
-#         "and sequential evaluation dataset with non-overlapping chunks..."
-#     )
-#     dls = make_dataloaders(
-#         local_train_mmap_path=local_train_mmap_path,
-#         local_eval_mmap_path=local_eval_mmap_path,
-#         dtype=dtype,
-#         dataloader_config=dataloader_config
-#     )
-
-#     logger.log_dataloader_creation(
-#         f"Prepared dataloaders with {len(dls['train'])} training batches and "
-#         f"{len(dls['eval'])} evaluation batches."
-#     )
-
-#     # STEP 5: Prepare output info
-#     output_info = dict(**asdict(dataset_info), **asdict(dataloader_config))
-
-#     return {
-#         "train": dls["train"],
-#         "eval": dls["eval"],
-#         "info": output_info,
-#     }
-
-
-

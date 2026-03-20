@@ -14,6 +14,8 @@ from scaling_llms.constants import (
 
 from scaling_llms.storage.base import DefaultRegistryStorage, RegistryStorage
 from scaling_llms.registries.runs.registry import RunRegistry
+from scaling_llms.registries.runs.artifacts import RunArtifacts
+from scaling_llms.registries.runs.metadata import RunMetadata
 from scaling_llms.registries.datasets.registry import DataRegistry
 
 
@@ -136,7 +138,10 @@ def make_gdrive_run_registry(configs: GoogleDriveConfigs | None = None, **overri
     # Legacy compatibility wrapper: mounted filesystem mode only.
     config = configs or GoogleDriveConfigs(**overrides)
     registry_storage = setup_legacy_drive_storage(config)
-    return RunRegistry.from_storage(registry_storage)
+    return RunRegistry(
+        metadata=RunMetadata(),
+        artifacts=RunArtifacts(registry_storage.runs_artifacts_root),
+    )
 
 
 def make_gdrive_data_registry(configs: GoogleDriveConfigs | None = None, **overrides):

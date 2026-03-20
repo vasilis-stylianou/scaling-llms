@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Sequence
+
+
+def validate_table_name(name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"Invalid SQL table name: {name}")
+    return name
 
 
 @dataclass(frozen=True)

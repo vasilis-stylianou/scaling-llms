@@ -50,7 +50,7 @@ def instantiate_model_from_run(run: Run) -> torch.nn.Module:
     """
 
     # Load model and config class info
-    model_class_path = run.artifacts.metadata_path(METADATA_FILES.model_class)
+    model_class_path = run.artifacts_dir.metadata_path(METADATA_FILES.model_class)
     class_info = json.loads(model_class_path.read_text())
 
     # Dynamically load the model and config class
@@ -58,7 +58,7 @@ def instantiate_model_from_run(run: Run) -> torch.nn.Module:
     ConfigClass = load_config_class(class_info)
     
     # Load model config
-    model_cfg_path = run.artifacts.metadata_path(METADATA_FILES.model_config)
+    model_cfg_path = run.artifacts_dir.metadata_path(METADATA_FILES.model_config)
     model_cfg = ConfigClass.from_json(model_cfg_path)
     
     # Instantiate model
@@ -81,7 +81,7 @@ def load_model_from_checkpoint(
     model = instantiate_model_from_run(run)
 
     # Load checkpoint state into model
-    ckpt_path = run.artifacts.checkpoint_path(ckpt_name)
+    ckpt_path = run.artifacts_dir.checkpoint_path(ckpt_name)
     ckpt = torch.load(ckpt_path, map_location=map_location)
 
     if ckpt.get(CHECKPOINT_KEYS.model) is None:
