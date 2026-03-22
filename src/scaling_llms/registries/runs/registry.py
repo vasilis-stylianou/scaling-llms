@@ -7,7 +7,8 @@ from typing import Any
 
 import pandas as pd
 
-from scaling_llms.registries.core.artifacts_sync import RCloneArtifactsSyncHooks
+from scaling_llms.registries.core.artifacts_sync import RCloneArtifactsSyncHooks, make_sync_hooks
+from scaling_llms.registries.core.metadata_backend import MetadataBackend
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.registries.runs.metadata import RunIdentity, RunMetadata
 from scaling_llms.tracking import Run
@@ -264,33 +265,29 @@ class RunRegistry:
                 _safe_set(RunStatus.SUCCEEDED.value)
 
 
-
 def make_run_registry(
     *,
     artifacts_root: str | Path, # TODO 
-    database_url: str,
-    runs_table_name: str,
+    table_name: str,
+    database_url: str | None = None,
+    backend: MetadataBackend | None = None,
     sync_hooks_type: str | None = None,
     sync_hooks_args: dict | None = None,
 ) -> RunRegistry:
-    
-    # TODO: when not using sync hooks, we shouldn't be writing to the ground truth DB
 
     # Setup Metadata
     metadata = RunMetadata(
-        database_url=database_url, # TODO: will use os.getenv("DATABASE_URL")
-        runs_table_name=runs_table_name,
+        table_name=table_name,
+        database_url=database_url,
+        backend=backend,
     )
 
     # Setup sync hooks
-    if sync_hooks_type is None:
-        sync_hooks = None
-    elif sync_hooks_type == "rclone":
-        if sync_hooks_args is None:
-            raise ValueError("sync_hooks_args must be provided if sync_hooks_type is specified")
-        sync_hooks = RCloneArtifactsSyncHooks(**sync_hooks_args)
-    else:        
-        raise ValueError(f"Unsupported sync_hooks_type: {sync_hooks_type}")
+    sync_hooks = make_sync_hooks(
+        local_artifacts_root=artifacts_root,
+        sync_hooks_type=sync_hooks_type,
+        sync_hooks_args=sync_hooks_args,
+    )
 
     # Setup Artifacts
     artifacts = RunArtifacts(
@@ -299,47 +296,3 @@ def make_run_registry(
     )
     
     return RunRegistry(metadata=metadata, artifacts=artifacts)
-
-
-# -------------------------------------------------------------------------------------
-# TODO: EXPERIMENT METHODS WILL BE MIGRATED TO experiments.py
-# -------------------------------------------------------------------------------------
-
-    # def delete_experiment(self, experiment_name: str) -> None:
-    #     self.execute(
-    #         f"DELETE FROM {self.table_name} WHERE experiment_name=:experiment_name",
-    #         {"experiment_name": experiment_name},
-    #     )
-
-
-    # def get_experiment_dir(self, experiment_name: str) -> Path:
-    #     # TODO: validation?
-    #     return self.artifacts.root / experiment_name
-
-
-    
-
-    # def get_git_commit(self, identity: RunIdentity) -> str | None:
-    #     return self.metadata.get_git_commit(identity)
-
-    # def set_status(self, identity: RunIdentity, status: RunStatus) -> None:
-    #     self._set_status_value(identity, status.value)
-
-    # def _set_status_value(self, identity: RunIdentity, status_value: str) -> None:
-    #     self.metadata.set_status_value(identity, status_value)
-
-    
-    # def delete_experiment(self, experiment_name: str, confirm: bool = True) -> None:
-    #     self.get_experiment_dir(experiment_name)
-
-    #     if confirm:
-    #         response = input(
-    #             f"Are you sure you want to delete experiment '{experiment_name}'? "
-    #             "Type 'y' or 'yes' to confirm: "
-    #         )
-    #         if response.strip().lower() not in ("y", "yes"):
-    #             print("Deletion cancelled.")
-    #             return
-
-    #     self.artifacts.delete_experiment_dir(experiment_name)
-    #     self.metadata.delete_experiment(experiment_name)

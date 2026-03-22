@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 import pandas as pd
 
-from scaling_llms.registries.core.artifacts_sync import RCloneArtifactsSyncHooks
+from scaling_llms.registries.core.artifacts_sync import make_sync_hooks
+from scaling_llms.registries.core.metadata_backend import MetadataBackend
 from scaling_llms.registries.datasets.artifacts import DatasetArtifacts, DatasetArtifactsDir, TokenizedDatasetInfo
 from scaling_llms.registries.datasets.metadata import DatasetIdentity, DatasetMetadata
 
@@ -139,31 +140,30 @@ class DatasetRegistry:
 
 def make_dataset_registry(
     *,
-    artifacts_root: str | Path, # TODO 
-    database_url: str,
-    datasets_table_name: str,
+    artifacts_root: str | Path,
+    table_name: str,
+    database_url: str | None = None,
+    backend: MetadataBackend | None = None,
     sync_hooks_type: str | None = None,
     sync_hooks_args: dict | None = None,
 ) -> DatasetRegistry:
-    
     # TODO: when not using sync hooks, we shouldn't be writing to the ground truth DB
-
+    # TODO: validate artifacts_root? 
+    
     # Setup Metadata
     metadata = DatasetMetadata(
-        database_url=database_url, # TODO: will use os.getenv("DATABASE_URL")
-        datasets_table_name=datasets_table_name,
+        table_name=table_name,
+        database_url=database_url, 
+        backend=backend,
     )
 
     # Setup sync hooks
-    if sync_hooks_type is None:
-        sync_hooks = None
-    elif sync_hooks_type == "rclone":
-        if sync_hooks_args is None:
-            raise ValueError("sync_hooks_args must be provided if sync_hooks_type is specified")
-        sync_hooks = RCloneArtifactsSyncHooks(**sync_hooks_args)
-    else:        
-        raise ValueError(f"Unsupported sync_hooks_type: {sync_hooks_type}")
-
+    sync_hooks = make_sync_hooks(
+        local_artifacts_root=artifacts_root,
+        sync_hooks_type=sync_hooks_type,
+        sync_hooks_args=sync_hooks_args,
+    )
+    
     # Setup Artifacts
     artifacts = DatasetArtifacts(
         root=artifacts_root,

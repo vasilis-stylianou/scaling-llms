@@ -28,12 +28,12 @@ class RunMetadata(MetadataDB):
     def __init__(
         self,
         *,
+        table_name: str,
         database_url: str | None = None,
-        runs_table_name: str = DEFAULT_RUNS_TABLE_NAME,
         backend: MetadataBackend | None = None,
     ):
         super().__init__(
-            table_spec=make_runs_table_spec(runs_table_name),
+            table_spec=make_runs_table_spec(table_name),
             database_url=database_url,
             backend=backend,
         )

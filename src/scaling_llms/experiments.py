@@ -24,8 +24,6 @@ from scaling_llms.trainer import Trainer, TrainerConfig
 # =============================================================================
 # Shared functions
 # =============================================================================
-
-
 def build_model(
     *,
     seq_len: int,
@@ -196,8 +194,6 @@ class ExperimentManager:
 # =============================================================================
 # Single-registry runner
 # =============================================================================
-
-
 class ExperimentRunner:
 
     def __init__(
@@ -334,19 +330,45 @@ class ExperimentRunner:
             self.run_registry.set_device_name(identity, trainer.cfg.device_name)
             trainer.train(max_steps=max_steps)
             return trainer
+        
+
+# -------------------------------------------------------------------------------------
+# TODO: EXPERIMENT METHODS WILL BE MIGRATED TO experiments.py
+# -------------------------------------------------------------------------------------
+
+    # def delete_experiment(self, experiment_name: str) -> None:
+    #     self.execute(
+    #         f"DELETE FROM {self.table_name} WHERE experiment_name=:experiment_name",
+    #         {"experiment_name": experiment_name},
+    #     )
 
 
-# # =============================================================================
-# # Convenience factory
-# # =============================================================================
-# def make_experiment_runner(
-#     exp_name: str,
-#     run_registry_kwargs: dict[str, Any],
-#     dataset_registry_kwargs: dict[str, Any],
-# ) -> ExperimentRunner:
+    # def get_experiment_dir(self, experiment_name: str) -> Path:
+    #     # TODO: validation?
+    #     return self.artifacts.root / experiment_name
 
-#     return ExperimentRunner(
-#         exp_name=exp_name,
-#         run_registry=make_run_registry(**run_registry_kwargs),
-#         dataset_registry=make_dataset_registry(**dataset_registry_kwargs),
-#     )
+
+    # def get_git_commit(self, identity: RunIdentity) -> str | None:
+    #     return self.metadata.get_git_commit(identity)
+
+    # def set_status(self, identity: RunIdentity, status: RunStatus) -> None:
+    #     self._set_status_value(identity, status.value)
+
+    # def _set_status_value(self, identity: RunIdentity, status_value: str) -> None:
+    #     self.metadata.set_status_value(identity, status_value)
+
+    
+    # def delete_experiment(self, experiment_name: str, confirm: bool = True) -> None:
+    #     self.get_experiment_dir(experiment_name)
+
+    #     if confirm:
+    #         response = input(
+    #             f"Are you sure you want to delete experiment '{experiment_name}'? "
+    #             "Type 'y' or 'yes' to confirm: "
+    #         )
+    #         if response.strip().lower() not in ("y", "yes"):
+    #             print("Deletion cancelled.")
+    #             return
+
+    #     self.artifacts.delete_experiment_dir(experiment_name)
+    #     self.metadata.delete_experiment(experiment_name)

@@ -58,7 +58,7 @@ def test_names():
 def dataset_registry(pg_backend: PostgresBackend, test_names: dict[str, str], tmp_path: Path) -> DatasetRegistry:
     metadata = DatasetMetadata(
         backend=pg_backend,
-        datasets_table_name=test_names["datasets_table"],
+        table_name=test_names["datasets_table"],
     )
     artifacts = DatasetArtifacts(root=tmp_path / "dataset_registry")
     return DatasetRegistry(metadata=metadata, artifacts=artifacts)
@@ -67,7 +67,7 @@ def dataset_registry(pg_backend: PostgresBackend, test_names: dict[str, str], tm
 def run_registry(pg_backend: PostgresBackend, test_names: dict[str, str], tmp_path: Path) -> RunRegistry:
     metadata = RunMetadata(
         backend=pg_backend,
-        runs_table_name=test_names["runs_table"],
+        table_name=test_names["runs_table"],
     )
     artifacts = RunArtifacts(root=tmp_path / "run_registry")
     return RunRegistry(metadata=metadata, artifacts=artifacts)
@@ -116,7 +116,7 @@ def dataset_registry_with_sync_hooks(
 
     metadata = DatasetMetadata(
         backend=pg_backend,
-        datasets_table_name=test_names["datasets_table"],
+        table_name=test_names["datasets_table"],
     )
 
     artifacts = DatasetArtifacts(
