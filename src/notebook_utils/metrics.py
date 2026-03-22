@@ -1,21 +1,20 @@
 import math
 import json
 import pandas as pd
-from scaling_llms.registries.runs.identity import RunIdentity
+from scaling_llms.registries.runs.metadata import RunIdentity
 from scaling_llms.registries.runs.registry import RunRegistry
 from scaling_llms.storage.google_drive import make_gdrive_run_registry
-from scaling_llms.tracking.run import Run
 from scaling_llms.constants import (
     METRIC_CATS,
     METADATA_FILES,
     PROJECT_DEV_NAME,
     PROJECT_NAME,
 )
-from scaling_llms.tracking.trackers import JsonlTrackerReader, METRIC_SCHEMA
+from scaling_llms.tracking import JsonlTrackerReader, Run, METRIC_SCHEMA
 
 
 def compute_expected_init_train_metrics(run: Run) -> dict[str, float]:
-    model_config = json.loads(run.artifacts.metadata_path(METADATA_FILES.model_config).read_text())
+    model_config = json.loads(run.artifacts_dir.metadata_path(METADATA_FILES.model_config).read_text())
     proba = 1 / model_config["vocab_size"]
     nll = -math.log(proba)
     ppl = math.exp(nll)

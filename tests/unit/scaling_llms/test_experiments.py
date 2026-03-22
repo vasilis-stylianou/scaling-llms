@@ -1,44 +1,39 @@
 import pytest
 
-from scaling_llms.experiments import (
-    make_gdrive_experiment_runner,
-)
+import os
+
+from scaling_llms.experiments import ExperimentRunner
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
-from scaling_llms.registries.datasets.identity import DatasetIdentity
+from scaling_llms.registries import (
+    DatasetRegistry, 
+    RunRegistry
+)
 from scaling_llms.trainer import Trainer
 
 
-EXPERIMENT_NAME = "test_experiment_runner" 
-RUN_NAME = "run_test"
+EXPERIMENT_NAME = "experiment_test_experiments"
+RUN_NAME = "run_test_experiments"
 
-@pytest.fixture(autouse=True)
-def cleanup_experiments(dataset_kwargs):
-    exp = make_gdrive_experiment_runner(EXPERIMENT_NAME, is_dev=True)
-    try:
-        exp.delete_experiment(confirm=False)
-    except Exception:
-        pass
 
-    # Delete stale test dataset from data registry so it gets
-    # re-registered with the current schema (incl. dataset_info.json)
-    try:
-        dataset_id = DatasetIdentity(**dataset_kwargs)
-        exp.data_registry.delete_dataset(identity=dataset_id, confirm=False)
-    except Exception:
-        pass
-
-    yield
-
-    # Cleanup after test
-    try:
-        exp.delete_experiment(confirm=False)
-    except Exception:
-        pass
+# ============================================================
+# FIXTURES
+# ============================================================
+@pytest.fixture
+def database_url() -> str:
+    value = os.getenv("DATABASE_URL")
+    if not value:
+        pytest.skip("DATABASE_URL is required for registry tracking tests")
+    return value
 
 
 @pytest.fixture
-def exp():
-    return make_gdrive_experiment_runner(EXPERIMENT_NAME, is_dev=True)
+def exp(run_registry: RunRegistry, dataset_registry: DatasetRegistry) -> ExperimentRunner:
+    runner = ExperimentRunner(
+        exp_name=EXPERIMENT_NAME,
+        run_registry=run_registry,
+        dataset_registry=dataset_registry,
+    )
+    return runner
 
 
 @pytest.fixture
@@ -52,6 +47,7 @@ def dataset_kwargs():
         text_field="sentence",
     )
 
+
 @pytest.fixture
 def dataloader_kwargs():
     return dict(
@@ -62,6 +58,7 @@ def dataloader_kwargs():
         seed=42,
     )
 
+
 @pytest.fixture
 def gpt_hparams():
     return dict(
@@ -69,6 +66,7 @@ def gpt_hparams():
         n_layer=1,
         n_head=2,
     )
+
 
 @pytest.fixture
 def trainer_kwargs():
@@ -84,7 +82,9 @@ def trainer_kwargs():
         ckpt_log_freq=2
     )
 
-
+# ============================================================
+# TESTS
+# ============================================================
 def test_experiment_runner_start(exp, dataset_kwargs, dataloader_kwargs, gpt_hparams, trainer_kwargs):
 
     trainer = exp.start(
@@ -111,7 +111,7 @@ def test_experiment_runner_start(exp, dataset_kwargs, dataloader_kwargs, gpt_hpa
         if filename == METADATA_FILES.data_log:
             continue
         if filename.endswith(".json") or filename.endswith("log"):
-            file_path = run.artifacts.metadata_path(filename)
+            file_path = run.artifacts_dir.metadata_path(filename)
             assert file_path.exists(), f"Expected metadata file {filename} to be logged"
         else:
             raise ValueError(f"Unexpected file name {filename} in METADATA_FILES")
@@ -119,14 +119,14 @@ def test_experiment_runner_start(exp, dataset_kwargs, dataloader_kwargs, gpt_hpa
     # Checkpoints
     for filename in CKPT_FILES.as_list():
         if filename.endswith(".pt"):
-            file_path = run.artifacts.checkpoint_path(filename)
+            file_path = run.artifacts_dir.checkpoint_path(filename)
             assert file_path.exists(), f"Expected checkpoint file {filename} to be saved"
         else:
             raise ValueError(f"Unexpected file name {filename} in CKPT_FILES")
 
     # Metrics
     for cat in METRIC_CATS.as_list():
-        metric_path = run.artifacts.metric_path(cat)
+        metric_path = run.artifacts_dir.metric_path(cat)
         assert metric_path.exists() and metric_path.is_file(), f"Expected metric file for category {cat} to be created"
 
     # TensorBoard logs
@@ -188,7 +188,6 @@ def test_experiment_runner_start_from_checkpoint(exp, dataset_kwargs, dataloader
         max_steps=num_steps
     )
     assert trainer2.step_idx == num_steps, "Trainer initialized from checkpoint did not reset step index correctly"
-    exp.delete_run("new_run", confirm=False)  # Clean up new run after test
 
     # Now attempt to start a new run initialized from the same checkpoint 
     # but with a different sequence length which should raise an error

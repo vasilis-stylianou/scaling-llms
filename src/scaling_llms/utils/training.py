@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 from scaling_llms.constants import METADATA_FILES
-from scaling_llms.tracking.run import Run
+from scaling_llms.tracking import Run
 from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.timer import DeviceTimer
 

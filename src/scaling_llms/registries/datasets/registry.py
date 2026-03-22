@@ -81,18 +81,6 @@ class DatasetRegistry:
             return None
         
         return TokenizedDatasetInfo.from_json(dataset_info_path)
-    
-    def get_artifacts_path(
-        self,
-        identity: DatasetIdentity,
-        raise_if_not_found: bool = True,
-    ) -> Path | None:
-        # Get Artifacts dir for the dataset (this will also validate that metadata and artifacts exist and are linked correctly)
-        artifacts_dir = self.get_dataset_artifacts(identity, raise_if_not_found=raise_if_not_found)
-        if artifacts_dir is None:
-            return None
-    
-        return artifacts_dir.root # absolute path to the (local) artifacts directory
 
     def register_dataset(
         self,
@@ -101,27 +89,27 @@ class DatasetRegistry:
         identity: DatasetIdentity,
         dataset_info: TokenizedDatasetInfo | None = None,
         **extra_params,
-    ) -> Path:
+    ) -> DatasetArtifactsDir:
         # Validate that dataset with the same identity doesn't already exist
         if self.dataset_exists(identity):
             raise ValueError("Dataset with the same metadata already exists.")
 
         # Write dataset artifacts
-        absolute_artifacts_path = self.artifacts.write_dataset(
+        artifacts_dir = self.artifacts.write_dataset(
             src_train=src_path_train_bin,
             src_eval=src_path_eval_bin,
             dataset_info=dataset_info,
         )
 
         # Write metadata
-        artifacts_path = self.artifacts.get_relative_path(absolute_artifacts_path)
+        artifacts_path = self.artifacts.get_relative_path(artifacts_dir.root)
         self.metadata.write_metadata(
             identity=identity,
             artifacts_path=artifacts_path,
             **extra_params,
         )
 
-        return absolute_artifacts_path
+        return artifacts_dir
 
     def delete_dataset(
         self,
@@ -141,11 +129,11 @@ class DatasetRegistry:
                 return
 
         # Find dataset artifacts path and delete artifacts and metadata
-        artifacts_path = self.get_artifacts_path(
+        artifacts_dir = self.get_dataset_artifacts(
             identity, 
             raise_if_not_found=True # raise if metadata or artifacts not found
         )
-        self.artifacts.delete_dir(artifacts_path) # this will also sync deletion to remote if configured
+        self.artifacts.delete_dir(artifacts_dir) # this will also sync deletion to remote if configured
         self.metadata.delete_entity(identity)
 
 

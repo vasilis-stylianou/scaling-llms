@@ -25,7 +25,6 @@ LOCAL_DATA_DIR = Path.home() / ".local" / "share" / PROJECT_NAME
 LOCAL_DEV_DATA_DIR = Path.home() / ".local" / "share" / PROJECT_DEV_NAME
 HF_CACHE_DIR_NAME = "huggingface_cache"
 TOKENIZED_CACHE_DIR_NAME = "tokenized_cache"
-MAX_CACHE_GB = 5 if os.environ["SCALING_LLMS_ENV"] == "local" else 30  # per cache dir (to prevent OOM issues on limited local storage)
 
 
 # -------------------------

@@ -61,7 +61,6 @@ class RunMetadata(MetadataDB):
         )
 
     def set_device_name(self, identity: RunIdentity, device_name: str | None) -> None:
-        # TODO: I think we should automate at run creation time? 
         if not self.entity_exists(identity):
             raise FileNotFoundError(f"Run not found: {identity}")
         self.execute(

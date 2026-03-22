@@ -12,7 +12,7 @@ from scaling_llms.checkpointing.model_io import (
     instantiate_model_from_run
 )
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
-from scaling_llms.tracking.run import Run
+from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
     compute_grad_zero_frac,

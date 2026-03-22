@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from scaling_llms.checkpointing.manager import CHECKPOINT_KEYS
 from scaling_llms.constants import METADATA_FILES
-from scaling_llms.tracking.run import Run
+from scaling_llms.tracking import Run
 
 
 @dataclass(frozen=True)

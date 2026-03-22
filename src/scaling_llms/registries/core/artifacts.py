@@ -2,6 +2,56 @@ from __future__ import annotations
 
 from pathlib import Path
 import secrets
+import shutil
+
+
+class ArtifactsDir:
+    """
+    Base class for local artifact directories.
+    """
+    root: Path
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root).expanduser().resolve()
+
+    def __fspath__(self) -> str:
+        return str(self.root)
+
+    def __str__(self) -> str:
+        return str(self.root)
+    
+    def exists(self) -> bool:
+        return self.root.exists() and self.root.is_dir()
+    
+    def ensure_dirs(self, *, exist_ok: bool = True) -> None:
+        """
+        If exist_ok=False, raises FileExistsError if any already exist.
+        """
+        # Create all standard subdirs defined as properties on this class
+        for attr_name in dir(type(self)):
+            attr = getattr(type(self), attr_name)
+            if isinstance(attr, property):
+                dir_path = getattr(self, attr_name)
+                dir_path.mkdir(parents=True, exist_ok=exist_ok)
+
+    def wipe(self) -> None:
+        """Delete all contents of the run directory, but keep the directory itself."""
+        if self.root.exists() and self.root.is_dir():
+            for item in self.root.iterdir():
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    for subitem in item.rglob("*"):
+                        if subitem.is_file():
+                            subitem.unlink()
+                        elif subitem.is_dir():
+                            subitem.rmdir()
+                    item.rmdir()
+        else:
+            raise FileNotFoundError(
+                f"Run directory {self.root} does not exist or is not a directory; cannot wipe."
+            )
+
 
 class Artifacts:
     """
@@ -40,6 +90,7 @@ class Artifacts:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def make_unique_dir(
+        self,
         *,
         prefix: str = "",
         parent_dir: Path,

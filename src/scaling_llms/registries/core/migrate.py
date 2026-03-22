@@ -1,8 +1,11 @@
 import re
 from collections.abc import Sequence
+from contextlib import contextmanager
+from typing import Iterator
 
 import psycopg
 
+from scaling_llms.registries.core.metadata_backend import PostgresBackend
 from scaling_llms.registries.core.schema import TableSpec
 
 
@@ -28,7 +31,6 @@ def _is_nullish_default(default_sql) -> bool:
 
 
 def _ddl_fragment_force_nullable(col) -> str:
-    # assumes col.ddl_fragment() includes "NOT NULL" when nullable=False
     frag = col.ddl_fragment()
     frag = frag.replace(" NOT NULL", "").replace(" not null", "")
     return frag
@@ -49,16 +51,30 @@ def _normalize_table_specs(table_spec: TableSpec | Sequence[TableSpec]) -> tuple
         return (table_spec,)
     return tuple(table_spec)
 
-# TODO: I think this could move to backend
-def migrate(database_url: str | None, table_spec: TableSpec | Sequence[TableSpec]) -> None:
-    if not database_url:
-        raise ValueError(
-            "DATABASE_URL must be set to run registry schema migration."
-        )
 
+@contextmanager
+def _migration_connection(backend: PostgresBackend) -> Iterator[tuple[psycopg.Connection, bool]]:
+    """
+    Yield (connection, should_commit).
+
+    - If backend has an injected connection, reuse it and do not commit here.
+    - Otherwise open a managed connection and commit on success.
+    """
+    if backend.connection is not None:
+        yield backend.connection, False
+        return
+
+    if not backend.database_url:
+        raise ValueError("DATABASE_URL must be set to run registry schema migration.")
+
+    with psycopg.connect(backend.database_url, autocommit=False) as con:
+        yield con, True
+
+
+def migrate(backend: PostgresBackend, table_spec: TableSpec | Sequence[TableSpec]) -> None:
     table_specs = _normalize_table_specs(table_spec)
 
-    with psycopg.connect(database_url, autocommit=False) as con:
+    with _migration_connection(backend) as (con, should_commit):
         with con.cursor() as cur:
             for spec in table_specs:
                 cur.execute(spec.create_table_sql())
@@ -94,4 +110,5 @@ def migrate(database_url: str | None, table_spec: TableSpec | Sequence[TableSpec
                         f"ON {spec.name} ({pk_cols_sql});"
                     )
 
-        con.commit()
+        if should_commit:
+            con.commit()

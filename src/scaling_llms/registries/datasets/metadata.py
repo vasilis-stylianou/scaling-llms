@@ -7,6 +7,7 @@ from scaling_llms.registries.core.metadata_backend import MetadataBackend
 from scaling_llms.registries.core.metadata import EntityIdentity, MetadataDB
 from scaling_llms.registries.datasets.schema import (
     DATASET_IDENTITY_COLS,
+    DEFAULT_DATASETS_TABLE_NAME,
     make_datasets_table_spec,
 )
 from scaling_llms.utils.config import BaseJsonConfig
@@ -44,9 +45,9 @@ class DatasetMetadata(MetadataDB):
     def __init__(
         self,
         *,
-        database_url: str,
-        datasets_table_name: str,
-        backend: MetadataBackend,
+        database_url: str | None = None,
+        datasets_table_name: str = DEFAULT_DATASETS_TABLE_NAME,
+        backend: MetadataBackend | None = None,
     ):
         super().__init__(
             table_spec=make_datasets_table_spec(datasets_table_name),
@@ -66,9 +67,10 @@ class DatasetMetadata(MetadataDB):
         params["created_at"] = self._get_local_iso_timestamp()
 
         # Validate that all keys in params are valid columns in the table
+        allowed_fields = {col.name for col in self.table_columns}
         for key in params:
-            if key not in self.table_columns:
-                raise ValueError(f"Invalid metadata field: {key}. Allowed fields: {self.table_columns}")
+            if key not in allowed_fields:
+                raise ValueError(f"Invalid metadata field: {key}. Allowed fields: {sorted(allowed_fields)}")
 
         # Construct and execute the INSERT query
         columns = ", ".join(params.keys())

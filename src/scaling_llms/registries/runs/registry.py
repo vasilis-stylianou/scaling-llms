@@ -8,10 +8,9 @@ from typing import Any
 import pandas as pd
 
 from scaling_llms.registries.core.artifacts_sync import RCloneArtifactsSyncHooks
-from scaling_llms.registries.core.helpers import get_current_git_commit_sha
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.registries.runs.metadata import RunIdentity, RunMetadata
-from scaling_llms.tracking.run import Run
+from scaling_llms.tracking import Run
 
 
 class RunStatus(StrEnum):
@@ -49,6 +48,9 @@ class RunRegistry:
     def run_exists(self, identity: RunIdentity) -> bool:
         return self.metadata.entity_exists(identity)
     
+    def set_device_name(self, identity: RunIdentity, device_name: str | None) -> None:
+        self.metadata.set_device_name(identity, device_name)
+
     def get_run_metadata(
         self, 
         identity: RunIdentity, 
@@ -77,7 +79,7 @@ class RunRegistry:
                 raise FileNotFoundError(f"Run metadata for identity {identity} does not contain artifacts_path")
             return None
         
-        artifacts_dir = self.artifacts.get_dir(artifacts_path) # this will also pull/sync artifacts if needed
+        artifacts_dir = self.artifacts.get_dir(artifacts_path, raise_if_not_found=False) # this will also pull/sync artifacts if needed
         if not artifacts_dir.exists():
             if raise_if_not_found:
                 raise FileNotFoundError(f"Run artifacts not found at path: {artifacts_path} for identity: {identity}")
@@ -160,8 +162,8 @@ class RunRegistry:
                 return
 
         # Get run artifacts path and delete artifacts and metadata
-        artifacts_path = self.get_artifacts_path(identity, raise_if_not_found=True)
-        self.artifacts.delete_dir(artifacts_path) # this will also sync deletion to remote if configured
+        artifacts_dir = self.get_run_artifacts(identity, raise_if_not_found=True) 
+        self.artifacts.delete_dir(artifacts_dir)
         self.metadata.delete_entity(identity)
 
     def rename_run(
@@ -253,13 +255,12 @@ class RunRegistry:
                 pass
 
             if completed_successfully:
-                if self.artifacts.sync_hooks is not None:
-                    try:
-                        self.artifacts.push_artifacts_dir(run.artifacts_dir)
-                    except Exception:
-                        _safe_set(RunStatus.FAILED.value)
-                        if fail_on_sync_error:
-                            raise
+                try:
+                    self.artifacts.push_dir(run.artifacts_dir)
+                except Exception:
+                    _safe_set(RunStatus.FAILED.value)
+                    if fail_on_sync_error:
+                        raise
                 _safe_set(RunStatus.SUCCEEDED.value)
 
 
@@ -327,9 +328,7 @@ def make_run_registry(
     # def _set_status_value(self, identity: RunIdentity, status_value: str) -> None:
     #     self.metadata.set_status_value(identity, status_value)
 
-    # def set_device_name(self, identity: RunIdentity, device_name: str | None) -> None:
-    #     self.metadata.set_device_name(identity, device_name)
-
+    
     # def delete_experiment(self, experiment_name: str, confirm: bool = True) -> None:
     #     self.get_experiment_dir(experiment_name)
 

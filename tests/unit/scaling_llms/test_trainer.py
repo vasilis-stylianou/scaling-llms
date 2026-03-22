@@ -7,9 +7,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.models import GPTModel, GPTConfig
-from scaling_llms.registries.runs.artifacts import RunArtifacts
+from scaling_llms.registries import RunArtifactsDir
 from scaling_llms.utils.io import log_as_json
-from scaling_llms.tracking.run import Run
+from scaling_llms.tracking import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
 
 
@@ -81,10 +81,10 @@ def extended_trainer_config():
 @pytest.fixture
 def tmp_run(tmp_path: Path):
     run_root = tmp_path / "test_run"
-    run_artifacts = RunArtifacts(run_root)
-    run_artifacts.ensure_dirs(exist_ok=False)
+    run_artifacts_dir = RunArtifactsDir(run_root)
+    run_artifacts_dir.ensure_dirs(exist_ok=False)
 
-    run = Run(run_artifacts)
+    run = Run(run_artifacts_dir)
     run.start(resume=False)
     try:
         yield run

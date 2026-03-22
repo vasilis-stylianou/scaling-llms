@@ -6,7 +6,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from scaling_llms.constants import DATASET_FILES
-from scaling_llms.registries.core.artifacts import Artifacts
+from scaling_llms.registries.core.artifacts import Artifacts, ArtifactsDir
 from scaling_llms.registries.core.artifacts_sync import ArtifactsSyncHooks
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import BaseLogger
@@ -20,8 +20,7 @@ class TokenizedDatasetInfo(BaseJsonConfig):
     total_train_tokens: int
     total_eval_tokens: int
 
-class DatasetArtifactsDir:
-    root: Path
+class DatasetArtifactsDir(ArtifactsDir):
 
     @property
     def train_bin(self) -> Path:
@@ -34,9 +33,6 @@ class DatasetArtifactsDir:
     @property
     def dataset_info(self) -> Path:
         return self.root / DATASET_FILES.dataset_info
-    
-    def exists(self) -> bool:
-        return self.train_bin.exists() and self.eval_bin.exists()
 
 
 class DatasetArtifacts(Artifacts):
@@ -51,21 +47,41 @@ class DatasetArtifacts(Artifacts):
     def make_new_dir(self) -> DatasetArtifactsDir:
         path = self.make_unique_dir(parent_dir=self.root, create_dir=True)
         return DatasetArtifactsDir(path)
+    
+    def push_dir(self, artifacts_dir: DatasetArtifactsDir) -> None:
+        if self.sync_hooks is not None:
+            relative_artifacts_path = self.get_relative_path(artifacts_dir.root)
+            self.sync_hooks.push_local_to_remote(relative_artifacts_path)
+
+    def pull_dir(self, artifacts_dir: DatasetArtifactsDir) -> None:
+        if self.sync_hooks is not None:
+            relative_artifacts_path = self.get_relative_path(artifacts_dir.root)
+            self.sync_hooks.pull_remote_to_local(relative_artifacts_path)
 
     def get_dir(self, relative_path: str | Path) -> DatasetArtifactsDir:
-        path = self.get_absolute_path(relative_path)
 
-        if self.sync_hooks is not None:
-            self.sync_hooks.pull_remote_to_local(relative_path)
+        artifacts_dir = DatasetArtifactsDir(self.get_absolute_path(relative_path))
+        self.pull_dir(artifacts_dir)
 
-        return DatasetArtifactsDir(path)
-    
+        if not artifacts_dir.exists():
+            raise FileNotFoundError(f"Dataset artifacts directory does not exist: {artifacts_dir}")
+
+        return artifacts_dir
+
+    def delete_dir(self, artifacts_dir: DatasetArtifactsDir) -> None:
+
+        if not artifacts_dir.exists():
+            raise FileNotFoundError(f"Dataset artifacts directory does not exist: {artifacts_dir}")
+        
+        shutil.rmtree(artifacts_dir.root)
+        self.push_dir(artifacts_dir)
+
     def write_dataset(
         self,
         src_train: Path,
         src_eval: Path,
         dataset_info: TokenizedDatasetInfo | None = None,
-    ) -> Path:
+    ) -> DatasetArtifactsDir:
         # Validate source paths
         src_train = Path(src_train).expanduser().resolve()
         src_eval = Path(src_eval).expanduser().resolve()
@@ -84,20 +100,6 @@ class DatasetArtifacts(Artifacts):
         if dataset_info is not None:
             log_as_json(dataset_info, artifacts_dir.dataset_info)
 
-        if self.sync_hooks is not None:
-            relative_artifacts_path = self.get_relative_path(artifacts_dir.root)
-            self.sync_hooks.push_local_to_remote(relative_artifacts_path)
+        self.push_dir(artifacts_dir)
 
-        return artifacts_dir.root
-    
-    def delete_dir(self, artifacts_path: str | Path) -> None:
-        # TODO: artifacts_path -> artifacts_dir
-        path = self.get_absolute_path(artifacts_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Dataset artifacts directory does not exist: {path}")
-
-        relative_artifacts_path = self.get_relative_path(path)
-        shutil.rmtree(path)
-
-        if self.sync_hooks is not None:
-            self.sync_hooks.push_local_to_remote(relative_artifacts_path)
+        return artifacts_dir

@@ -42,11 +42,17 @@ class MetadataDB:
         self.table_columns = tuple(table_spec.columns)
         self.database_url = database_url
         self._backend: MetadataBackend = backend or self._make_default_backend()
-        migrate(self.database_url, table_spec)
+        migrate(self._backend, table_spec)
 
     @staticmethod
     def _build_identity_placeholders(identity: EntityIdentity) -> str:
-        return " AND ".join(f"{col}=:{col}" for col in identity.as_kwargs())
+        clauses: list[str] = []
+        for col, value in identity.as_kwargs().items():
+            if value is None:
+                clauses.append(f"{col} IS NULL")
+            else:
+                clauses.append(f"{col}=:{col}")
+        return " AND ".join(clauses)
 
     def _make_default_backend(self) -> MetadataBackend:
         if not self.database_url:

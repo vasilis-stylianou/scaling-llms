@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from tempfile import TemporaryDirectory
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,82 +11,22 @@ import logging
 import numpy as np
 import tiktoken
 import torch
-from datasets import load_dataset, load_dataset_builder
-import shutil
+from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 
 from scaling_llms.constants import (
     DATASET_FILES,
-    LOCAL_DATA_DIR,
     HF_CACHE_DIR_NAME,
-    MAX_CACHE_GB,
     METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
 )
-from scaling_llms.registries.datasets.artifacts import TokenizedDatasetInfo
+from scaling_llms.registries.datasets.artifacts import DatasetArtifactsDir, TokenizedDatasetInfo
 from scaling_llms.registries.datasets.metadata import DatasetIdentity
-from scaling_llms.registries.datasets.registry import DataRegistry
-from scaling_llms.tracking.run import Run
+from scaling_llms.registries.datasets.registry import DatasetRegistry
+from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger
 
-
-# ============================================================
-# DETERMINISM (single GPU)
-# ============================================================
-def ensure_local_dataset_cache_cap(
-    cache_dir: Path,
-    dataset_name: str,
-    dataset_config: str | None,
-    cap_size_gb: float,
-) -> None:
-    """
-    If (current_cache_size + expected_dataset_size) > cap_size_gb,
-    empties the local dataset directory before loading.
-
-    Returns the cache dir Path.
-    """
-    CAP_BYTES = int(cap_size_gb * 1024**3)
-
-    # Resolve local data dir
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # ---- 1. Get expected dataset size from HF metadata ----
-    builder = load_dataset_builder(dataset_name, dataset_config)
-    expected_size = (
-        builder.info.dataset_size
-        or builder.info.size_in_bytes
-        or builder.info.download_size
-        or 0
-    )   
-    if expected_size > CAP_BYTES:
-        raise ValueError(
-            f"Expected dataset size {expected_size / 1024**3:.2f} GB "
-            f"already exceeds cap of {cap_size_gb} GB, cannot proceed with loading dataset. "
-            f"Consider increasing cap_size_gb or using a smaller dataset."
-        )
-
-    # ---- 2. Compute current cache size ----
-    current_cache_size = 0
-    for p in cache_dir.rglob("*"):
-        try:
-            if p.is_file() and not p.is_symlink():
-                current_cache_size += p.stat().st_size
-        except FileNotFoundError:
-            pass
-        
-    # ---- 3. Decide whether to wipe data ----
-    if current_cache_size + expected_size > CAP_BYTES:
-        for p in cache_dir.iterdir():
-            if p.is_dir() and not p.is_symlink():
-                shutil.rmtree(p, ignore_errors=True)
-            else:
-                try:
-                    p.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-    return
 
 # ============================================================
 # DETERMINISM (single GPU)
@@ -345,24 +286,15 @@ class SequentialTokenChunks(Dataset):
 # ============================================================
 def make_tokenized_dataset(
     dataset_id: DatasetIdentity,
-    data_registry: DataRegistry,
+    dataset_registry: DatasetRegistry,
     local_train_mmap_path: Path,
     local_eval_mmap_path: Path,
     local_hf_cache_dir: Path,
     local_tokenized_cache_dir: Path,
-) -> Path:
+) -> DatasetArtifactsDir:
     """
     TODO
     """
-    # Ensure local dataset cache size does not exceed maximum allowed size
-    for cache_dir in [local_hf_cache_dir, local_tokenized_cache_dir]:
-        ensure_local_dataset_cache_cap(
-            cache_dir=cache_dir,
-            dataset_name=dataset_id.dataset_name,
-            dataset_config=dataset_id.dataset_config,
-            cap_size_gb=MAX_CACHE_GB,
-        )
-
     # Load tokenizer
     tokenizer = load_tokenizer(dataset_id.tokenizer_name)
     encode_fn, eos_id, vocab_size = tokenizer["encode"], tokenizer["eot_token"], tokenizer["vocab_size"]
@@ -415,7 +347,7 @@ def make_tokenized_dataset(
         total_eval_tokens=total_eval_tokens
     )
 
-    registered_dataset_path = data_registry.register_dataset(
+    artifacts_dir = dataset_registry.register_dataset(
         src_path_train_bin=local_train_mmap_path,
         src_path_eval_bin=local_eval_mmap_path,
         identity=dataset_id,
@@ -425,7 +357,7 @@ def make_tokenized_dataset(
         total_eval_tokens=total_eval_tokens,
     )
 
-    return registered_dataset_path
+    return artifacts_dir
 
 
 # ============================================================
@@ -505,14 +437,18 @@ def make_dataloaders(
 # HIGH-LEVEL DATALOADER FACTORY WITH REGISTRY INTEGRATION
 # ============================================================
 @dataclass(frozen=True)
-class LocalDataPaths:
-    local_data_dir: Path = LOCAL_DATA_DIR
+class LocalCachePaths:
+    cache_dir: Path | None = None
+    tmp_dir: TemporaryDirectory | None = field(init=False)
     hf_cache_dir: Path = field(init=False)
     tokenized_cache_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "hf_cache_dir", Path(self.local_data_dir) / HF_CACHE_DIR_NAME)
-        object.__setattr__(self, "tokenized_cache_dir", Path(self.local_data_dir) / TOKENIZED_CACHE_DIR_NAME)
+        cache_dir, tmp_dir = self._prepare_cache_dir(self.cache_dir)
+        object.__setattr__(self, "cache_dir", cache_dir)
+        object.__setattr__(self, "tmp_dir", tmp_dir)
+        object.__setattr__(self, "hf_cache_dir", Path(self.cache_dir) / HF_CACHE_DIR_NAME)
+        object.__setattr__(self, "tokenized_cache_dir", Path(self.cache_dir) / TOKENIZED_CACHE_DIR_NAME)
 
     def dataset_dir(self, dataset_id: DatasetIdentity) -> Path:
         return self.tokenized_cache_dir / dataset_id.slug()
@@ -522,13 +458,22 @@ class LocalDataPaths:
 
     def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
         return self.dataset_dir(dataset_id) / DATASET_FILES.eval_tokens
+    
+    def cleanup_if_tmp_dir(self) -> None:
+        if self.tmp_dir is not None:
+            self.tmp_dir.cleanup()
 
+    def _prepare_cache_dir(self, cache_dir: Path | None) -> tuple[Path, TemporaryDirectory | None]:
+        if cache_dir is not None:
+            return cache_dir, None
+        tmp_dir = TemporaryDirectory(prefix="scaling-llms-data-")
+        return Path(tmp_dir.name), tmp_dir
 
 def get_dataloaders(
     dataset_id: DatasetIdentity,
-    data_registry: DataRegistry,
+    dataset_registry: DatasetRegistry,
     dataloader_config: DataLoaderConfig,
-    local_data_dir: Path | None = None,
+    cache_dir: Path | None = None,
     dataset_info: TokenizedDatasetInfo | None = None,
     run: Run | None = None,
 ) -> dict[str, Any]:
@@ -543,31 +488,33 @@ def get_dataloaders(
     logger.log_dataset_id(dataset_id)
     logger.log_dataloader_config(dataloader_config)    
 
-    # STEP 1: Prepare local paths for token memmaps 
-    # NOTE: these are the source for dataloader creation and also used for registry registration, 
-    # but the canonical "source of truth" for the dataset is the Data Registry.
-    override_kwargs = {} if local_data_dir is None else {"local_data_dir": local_data_dir}
-    local_data_paths = LocalDataPaths(**override_kwargs)
-    local_train_mmap_path = local_data_paths.train_mmap_path(dataset_id)
-    local_eval_mmap_path = local_data_paths.eval_mmap_path(dataset_id)
+    # STEP 1: Prepare tmp paths for token memmaps 
+    cache_paths = LocalCachePaths(cache_dir)
+    train_mmap_cache_path = cache_paths.train_mmap_path(dataset_id)
+    eval_mmap_cache_path = cache_paths.eval_mmap_path(dataset_id)
 
     # STEP 2: Create tokenized dataset and register in Data Registry if not already present
-    if data_registry.dataset_exists(dataset_id):
+    if dataset_registry.dataset_exists(dataset_id):
         logger.log_tokenization("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
-        registered_dataset_path = data_registry.find_dataset_path(dataset_id, raise_if_not_found=True)
+        artifacts_dir = dataset_registry.get_dataset_artifacts(
+            dataset_id,
+            raise_if_not_found=True,
+        )
     else:
         logger.log_tokenization("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
-        registered_dataset_path = make_tokenized_dataset(
+        artifacts_dir = make_tokenized_dataset(
             dataset_id=dataset_id,
-            data_registry=data_registry,
-            local_train_mmap_path=local_train_mmap_path,
-            local_eval_mmap_path=local_eval_mmap_path,
-            local_hf_cache_dir=local_data_paths.hf_cache_dir,
-            local_tokenized_cache_dir=local_data_paths.tokenized_cache_dir,
+            dataset_registry=dataset_registry,
+            local_train_mmap_path=train_mmap_cache_path,
+            local_eval_mmap_path=eval_mmap_cache_path,
+            local_hf_cache_dir=cache_paths.hf_cache_dir,
+            local_tokenized_cache_dir=cache_paths.tokenized_cache_dir,
         )
+        
+        cache_paths.cleanup_if_tmp_dir()  # clean up any temporary cache directory if we created one
 
     # Load dataset info from Data Registry
-    dataset_info = dataset_info or data_registry.get_dataset_info(dataset_id)
+    dataset_info = dataset_info or dataset_registry.get_dataset_info(dataset_id)
     dtype = np.dtype(dataset_info.dtype)
     logger.log_dataset_info(dataset_info)
     
@@ -577,8 +524,8 @@ def get_dataloaders(
         "and sequential evaluation dataset with non-overlapping chunks..."
     )
     dls = make_dataloaders(
-        local_train_mmap_path=registered_dataset_path / DATASET_FILES.train_tokens,
-        local_eval_mmap_path=registered_dataset_path / DATASET_FILES.eval_tokens,
+        local_train_mmap_path=artifacts_dir.train_bin,
+        local_eval_mmap_path=artifacts_dir.eval_bin,
         dtype=dtype,
         dataloader_config=dataloader_config
     )
