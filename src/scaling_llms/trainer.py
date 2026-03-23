@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any, Literal
 import torch
 
-from scaling_llms.checkpointing.manager import CheckpointManager
-from scaling_llms.checkpointing.model_io import (
+from scaling_llms.checkpointing import (
     get_model_class_info, 
-    instantiate_model_from_run
+    instantiate_model_from_run,
+    CheckpointManager,
 )
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES, METRIC_CATS
 from scaling_llms.tracking import Run

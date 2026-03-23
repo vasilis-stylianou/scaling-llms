@@ -1,9 +1,9 @@
-EXPERIMENT_NAME = "it_remote_runner_dev"
+EXPERIMENT_NAME = "test_run_experiments"
 
 RUNS = [
     {
-        "run_name": "run_start",
         "method": "start",
+        "run_name": "test_run", # generate it randomly for each unit test
         "dataset_kwargs": {
             "dataset_name": "super_glue",
             "dataset_config": "cb",
@@ -35,6 +35,6 @@ RUNS = [
             "eval_log_freq": 1,
             "ckpt_log_freq": 1,
         },
-        "max_steps": 1,
+        "max_steps": 2,
     }
 ]

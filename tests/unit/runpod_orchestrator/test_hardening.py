@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from runpod_orchestrator import cli, lifecycle, provision, ssh, workflows
-from runpod_orchestrator.models import PodConnectionInfo, PodSpec, RetryPolicy, SetupSpec, TrainSpec
+from runpod_orchestrator_old import cli, lifecycle, provision, ssh, workflows
+from runpod_orchestrator_old.models import PodConnectionInfo, PodSpec, RetryPolicy, SetupSpec, TrainSpec
 
 
 def _conn() -> PodConnectionInfo:

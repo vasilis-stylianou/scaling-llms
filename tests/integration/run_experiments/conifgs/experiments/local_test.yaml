@@ -1,0 +1,17 @@
+experiment_config_module: 
+local_test
+
+registries:
+  database_url_env_name: DATABASE_URL
+  runs:
+    artifacts_root: ~/integration_tests/artifacts/runs
+    table_name: test_runs
+    sync_hooks_type:
+    sync_hooks_args: {}
+      
+
+  datasets:
+    artifacts_root: ~/integration_tests/artifacts/datasets
+    table_name: test_datasets
+    sync_hooks_type:
+    sync_hooks_args: {}

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from scaling_llms.registries.core.artifacts_sync import RCloneArtifactsSyncHooks, make_sync_hooks
-from scaling_llms.registries.core.metadata_backend import MetadataBackend
+from scaling_llms.registries.core.artifacts_sync import make_sync_hooks
+from scaling_llms.registries.core.registry import MakeRegistryConfig
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.registries.runs.metadata import RunIdentity, RunMetadata
 from scaling_llms.tracking import Run
@@ -265,34 +266,35 @@ class RunRegistry:
                 _safe_set(RunStatus.SUCCEEDED.value)
 
 
+# -------------------------------
+# FACTORY METHOD
+# -------------------------------
+@dataclass(slots=True)
+class MakeRunRegistryConfig(MakeRegistryConfig):
+    pass
+
+
 def make_run_registry(
-    *,
-    artifacts_root: str | Path, # TODO 
-    table_name: str,
-    database_url: str | None = None,
-    backend: MetadataBackend | None = None,
-    sync_hooks_type: str | None = None,
-    sync_hooks_args: dict | None = None,
+    config: MakeRunRegistryConfig,
 ) -> RunRegistry:
-
-    # Setup Metadata
     metadata = RunMetadata(
-        table_name=table_name,
-        database_url=database_url,
-        backend=backend,
+        table_name=config.table_name,
+        database_url=config.database_url,
+        backend=config.backend,
     )
 
-    # Setup sync hooks
     sync_hooks = make_sync_hooks(
-        local_artifacts_root=artifacts_root,
-        sync_hooks_type=sync_hooks_type,
-        sync_hooks_args=sync_hooks_args,
+        local_artifacts_root=config.artifacts_root,
+        sync_hooks_type=config.sync_hooks_type,
+        sync_hooks_args=config.sync_hooks_args,
     )
 
-    # Setup Artifacts
     artifacts = RunArtifacts(
-        root=artifacts_root,
+        root=config.artifacts_root,
         sync_hooks=sync_hooks,
     )
-    
-    return RunRegistry(metadata=metadata, artifacts=artifacts)
+
+    return RunRegistry(
+        metadata=metadata,
+        artifacts=artifacts,
+    )

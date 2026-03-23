@@ -20,9 +20,12 @@ from scaling_llms.constants import (
     METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
 )
-from scaling_llms.registries.datasets.artifacts import DatasetArtifactsDir, TokenizedDatasetInfo
-from scaling_llms.registries.datasets.metadata import DatasetIdentity
-from scaling_llms.registries.datasets.registry import DatasetRegistry
+from scaling_llms.registries import (
+    DatasetArtifactsDir,
+    DatasetIdentity,
+    DatasetRegistry,
+    TokenizedDatasetInfo
+)
 from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.loggers import DataLogger

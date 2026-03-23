@@ -1,3 +1,8 @@
+"""
+Module for defining data classes that represent the specifications and configuration of the orchestrator. 
+They provide a structured way to represent the inputs and outputs of the orchestrator's operations.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,15 +13,6 @@ from pathlib import Path
 class RetryPolicy:
     max_attempts: int = 5
     retry_base_s: float = 2.0
-
-
-def _models_module_helper() -> None:
-    """Module-level placeholder to hold concise models-related helpers.
-
-    This symbol exists only to provide a place for brief module-scoped
-    documentation helpers; primary dataclasses encapsulate model behavior.
-    """
-    return None
 
 
 @dataclass(frozen=True)
@@ -40,28 +36,27 @@ class PodSpec:
 class PodConnectionInfo:
     pod_id: str
     name: str
-    desired_status: str | None
-    runtime_status: str | None
-    public_ip: str | None
-    ssh_port: int | None
+    public_ip: str
+    ssh_port: int
+    desired_status: str | None = None
+    runtime_status: str | None = None
 
     @property
     def is_ssh_ready(self) -> bool:
-        return self.public_ip is not None and self.ssh_port is not None
+        return bool(self.public_ip and self.ssh_port)
 
-    def ssh_command(self, identity_file: str) -> str:
-        if not self.is_ssh_ready:
-            raise RuntimeError("SSH is not ready yet.")
-        identity_file = str(Path(identity_file).expanduser())
-        return f"ssh root@{self.public_ip} -p {self.ssh_port} -i {identity_file}"
+    def ssh_command(self, identity_file: str | None = None) -> str:
+        identity = identity_file or "~/.ssh/runpod_key"
+        expanded = str(Path(identity).expanduser())
+        return f"ssh -i {expanded} -p {self.ssh_port} root@{self.public_ip}"
 
 
 @dataclass(frozen=True)
-class SetupSpec:
-    identity_file: str = "~/.ssh/runpod_key"
-    repo_url: str = ""
-    repo_dir: str = "/workspace/repos/scaling-llms"
+class ProvisioningSpec:
+    repo_dir: str
+    repo_url: str
     repo_branch: str | None = None
+    identity_file: str = "~/.ssh/runpod_key"
     rclone_config_local: str | None = None
     rclone_config_remote: str = "/root/.config/rclone/rclone.conf"
     create_jupyter_kernel: bool = False
@@ -73,21 +68,32 @@ class SetupSpec:
     def expanded_identity_file(self) -> str:
         return str(Path(self.identity_file).expanduser())
 
-    @property
-    def expanded_rclone_local(self) -> Path | None:
-        if self.rclone_config_local is None:
-            return None
-        return Path(self.rclone_config_local).expanduser().resolve()
-
 
 @dataclass(frozen=True)
-class TrainSpec:
+class JobSpec:
     command: str
+    repo_dir: str
     identity_file: str = "~/.ssh/runpod_key"
-    repo_dir: str = "/workspace/repos/scaling-llms"
-    tmux_session_name: str = "train"
-    log_path: str = "/workspace/runs/train.log"
+    tmux_session_name: str = "job"
+    log_path: str = "/workspace/runs/job.log"
 
     @property
     def expanded_identity_file(self) -> str:
         return str(Path(self.identity_file).expanduser())
+
+
+@dataclass(frozen=True)
+class WorkflowOptions:
+    reuse_if_exists: bool = True
+    timeout_s: int = 900
+    poll_s: int = 5
+    terminate_after_launch: bool = False
+    terminate_on_failure: bool = False
+    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
+
+
+@dataclass(frozen=True)
+class RunResult:
+    pod: PodConnectionInfo
+    tmux_session_name: str
+    log_path: str

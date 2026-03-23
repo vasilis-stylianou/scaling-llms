@@ -1,7 +1,0 @@
-experiment_config_module: tests.integration.remote_run_configs.resume_config
-local_project_root: __TMP_LOCAL_PROJECT_ROOT__
-remote_project_subdir: ml-experiments/scaling-llms-dev
-remote_name: gdrive
-rclone_executable: rclone
-rclone_extra_args: []
-overwrite_runs: false
