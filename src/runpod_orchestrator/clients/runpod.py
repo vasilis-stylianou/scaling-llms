@@ -5,19 +5,19 @@ from typing import Any
 
 import runpod
 
-from runpod_orchestrator.exceptions import RunPodError
+from runpod_orch.exceptions import RunPodError
 
 
 class RunPodClient:
-    """
-    RunPodClient is a wrapper around the runpod Python SDK that provides methods for managing pods. 
-    It handles API key configuration and provides error handling for unexpected responses.
-    """
+    """Thin wrapper around the runpod SDK for pod lifecycle operations."""
+
     def __init__(self, api_key: str | None = None) -> None:
         self.api_key = api_key or os.getenv("RUNPOD_API_KEY")
         if not self.api_key:
             raise RunPodError("RUNPOD_API_KEY is not set")
         runpod.api_key = self.api_key
+
+    # -- queries --
 
     def list_pods(self) -> list[dict[str, Any]]:
         result = runpod.get_pods()
@@ -32,10 +32,14 @@ class RunPodClient:
         return None
 
     def get_pod(self, pod_id: str) -> dict[str, Any]:
-        for pod in self.list_pods():
-            if pod.get("id") == pod_id:
-                return pod
-        raise RunPodError(f"Pod not found: {pod_id}")
+        pod = runpod.get_pod(pod_id)
+        if pod is None:
+            raise RunPodError(f"Pod {pod_id} not found")
+        if not isinstance(pod, dict):
+            raise RunPodError(f"Unexpected get_pod() response: {pod}")
+        return pod
+
+    # -- mutations --
 
     def create_pod(
         self,
@@ -58,8 +62,8 @@ class RunPodClient:
             container_disk_in_gb=container_disk_in_gb,
             volume_in_gb=volume_in_gb,
             ports=ports,
-            env=env,
             docker_args=docker_args,
+            env={str(k): str(v) for k, v in env.items()},
         )
         if not isinstance(result, dict):
             raise RunPodError(f"Unexpected create_pod() response: {result!r}")

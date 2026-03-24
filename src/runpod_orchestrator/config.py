@@ -1,9 +1,3 @@
-"""
-Module for loading and validating the orchestrator configuration from a YAML file.
-It defines the expected structure of the configuration and provides error handling
-for missing or invalid fields.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,12 +7,12 @@ from typing import Any
 
 import yaml
 
-from runpod_orchestrator.exceptions import ConfigError
-from runpod_orchestrator.specs import (
+from runpod_orch.exceptions import ConfigError
+from runpod_orch.specs import (
+    JobLauncherSpec,
     PodSpec,
     ProvisioningSpec,
     RetryPolicy,
-    JobSpec,
     WorkflowOptions,
 )
 
@@ -41,25 +35,29 @@ def _require_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class OrchestratorConfig:
+class PodOrchestratorConfig:
     pod_spec: PodSpec
     bootstrap_script: str
     provisioning: ProvisioningSpec
-    job_spec: JobSpec
+    job_launcher_spec: JobLauncherSpec
+    work_dir: str | None = None
     workflow: WorkflowOptions = field(default_factory=WorkflowOptions)
 
     @property
     def bootstrap_script_path(self) -> Path:
-        return Path(self.bootstrap_script).expanduser().resolve()
+        if self.work_dir:
+            return Path(self.work_dir).expanduser().resolve() / Path(self.bootstrap_script)
+        else:
+            return Path(self.bootstrap_script).expanduser().resolve()
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> OrchestratorConfig:
+    def from_yaml(cls, path: str | Path) -> PodOrchestratorConfig:
         config_path = Path(path).expanduser().resolve()
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
         pod_data = _require_dict(data, "pod_spec")
         provisioning_data = _require_dict(data, "provisioning")
-        job_data = _require_dict(data, "job_spec")
+        job_launcher_data = _require_dict(data, "job_launcher_spec")
         workflow_data = data.get("workflow", {}) or {}
         retry_data = workflow_data.get("retry_policy", {}) or {}
 
@@ -89,7 +87,9 @@ class OrchestratorConfig:
                     if provisioning_data.get("repo_branch") is not None
                     else None
                 ),
-                identity_file=str(provisioning_data.get("identity_file", pod_identity_file)),
+                identity_file=str(
+                    provisioning_data.get("identity_file", pod_identity_file)
+                ),
                 rclone_config_local=(
                     str(provisioning_data["rclone_config_local"])
                     if provisioning_data.get("rclone_config_local") is not None
@@ -101,28 +101,33 @@ class OrchestratorConfig:
                         "/root/.config/rclone/rclone.conf",
                     )
                 ),
-                create_jupyter_kernel=bool(provisioning_data.get("create_jupyter_kernel", False)),
+                create_jupyter_kernel=bool(
+                    provisioning_data.get("create_jupyter_kernel", False)
+                ),
                 kernel_name=str(provisioning_data.get("kernel_name", "scaling-llms")),
                 kernel_display_name=str(
                     provisioning_data.get("kernel_display_name", "Python (scaling-llms)")
                 ),
                 poetry_install_args=[
-                    str(arg) for arg in (provisioning_data.get("poetry_install_args", []) or [])
+                    str(arg)
+                    for arg in (provisioning_data.get("poetry_install_args", []) or [])
                 ],
             )
         except KeyError as exc:
             raise ConfigError(f"Missing provisioning field: {exc.args[0]}") from exc
 
         try:
-            job_spec = JobSpec(
-                command=str(job_data["command"]),
-                repo_dir=str(job_data.get("repo_dir", provisioning.repo_dir)),
-                identity_file=str(job_data.get("identity_file", pod_identity_file)),
-                tmux_session_name=str(job_data.get("tmux_session_name", "job")),
-                log_path=str(job_data.get("log_path", "/workspace/runs/job.log")),
+            job_launcher_spec = JobLauncherSpec(
+                command=str(job_launcher_data["command"]),
+                repo_dir=str(job_launcher_data.get("repo_dir", provisioning.repo_dir)),
+                identity_file=str(
+                    job_launcher_data.get("identity_file", pod_identity_file)
+                ),
+                tmux_session_name=str(job_launcher_data.get("tmux_session_name", "job")),
+                log_path=str(job_launcher_data.get("log_path", "/workspace/runs/job.log")),
             )
         except KeyError as exc:
-            raise ConfigError(f"Missing job_spec field: {exc.args[0]}") from exc
+            raise ConfigError(f"Missing job_launcher_spec field: {exc.args[0]}") from exc
 
         bootstrap_script = data.get("bootstrap_script")
         if bootstrap_script is None:
@@ -132,8 +137,12 @@ class OrchestratorConfig:
             reuse_if_exists=bool(workflow_data.get("reuse_if_exists", True)),
             timeout_s=int(workflow_data.get("timeout_s", 900)),
             poll_s=int(workflow_data.get("poll_s", 5)),
-            terminate_after_launch=bool(workflow_data.get("terminate_after_launch", False)),
-            terminate_on_failure=bool(workflow_data.get("terminate_on_failure", False)),
+            terminate_after_launch=bool(
+                workflow_data.get("terminate_after_launch", False)
+            ),
+            terminate_on_failure=bool(
+                workflow_data.get("terminate_on_failure", False)
+            ),
             retry_policy=RetryPolicy(
                 max_attempts=int(retry_data.get("max_attempts", 5)),
                 retry_base_s=float(retry_data.get("retry_base_s", 2.0)),
@@ -144,6 +153,7 @@ class OrchestratorConfig:
             pod_spec=pod_spec,
             bootstrap_script=str(bootstrap_script),
             provisioning=provisioning,
-            job_spec=job_spec,
+            job_launcher_spec=job_launcher_spec,
             workflow=workflow,
+            work_dir=data.get("work_dir"),
         )

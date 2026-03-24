@@ -56,23 +56,23 @@ def _load_config(config_path: Path) -> LoadedConfig:
     load_dotenv()
 
     with config_path.open("r", encoding="utf-8") as fp:
-        raw = yaml.safe_load(fp)
+        data = yaml.safe_load(fp)
 
-    if raw is None:
+    if data is None:
         raise ValueError("Config file is empty")
-    if not isinstance(raw, dict):
+    if not isinstance(data, dict):
         raise ValueError("Config file must contain a top-level mapping")
 
-    missing = _REQUIRED_TOP_LEVEL_YAML_KEYS.difference(raw.keys())
+    missing = _REQUIRED_TOP_LEVEL_YAML_KEYS.difference(data.keys())
     if missing:
         missing_keys = ", ".join(sorted(missing))
         raise ValueError(f"Missing required config keys: {missing_keys}")
 
-    experiment_config_module = raw["experiment_config_module"]
+    experiment_config_module = data["experiment_config_module"]
     if not isinstance(experiment_config_module, str) or not experiment_config_module.strip():
         raise ValueError("experiment_config_module must be a non-empty string")
 
-    registries = raw["registries"]
+    registries = data["registries"]
     if not isinstance(registries, dict):
         raise ValueError("registries must be a mapping")
     if "runs" not in registries or "datasets" not in registries:
@@ -90,12 +90,12 @@ def _load_config(config_path: Path) -> LoadedConfig:
         ),
         run_registry=MakeRunRegistryConfig.from_raw(
             name="runs",
-            raw=registries["runs"],
+            data=registries["runs"],
             env_var_name=database_url_env_name,
         ),
         dataset_registry=MakeDatasetRegistryConfig.from_raw(
             name="datasets",
-            raw=registries["datasets"],
+            data=registries["datasets"],
             env_var_name=database_url_env_name,
         ),
     )

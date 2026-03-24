@@ -1,8 +1,3 @@
-"""
-Module for defining data classes that represent the specifications and configuration of the orchestrator. 
-They provide a structured way to represent the inputs and outputs of the orchestrator's operations.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -36,19 +31,20 @@ class PodSpec:
 class PodConnectionInfo:
     pod_id: str
     name: str
-    public_ip: str
-    ssh_port: int
-    desired_status: str | None = None
-    runtime_status: str | None = None
+    desired_status: str | None
+    runtime_status: str | None
+    public_ip: str | None
+    ssh_port: int | None
 
     @property
     def is_ssh_ready(self) -> bool:
-        return bool(self.public_ip and self.ssh_port)
+        return self.public_ip is not None and self.ssh_port is not None
 
-    def ssh_command(self, identity_file: str | None = None) -> str:
-        identity = identity_file or "~/.ssh/runpod_key"
-        expanded = str(Path(identity).expanduser())
-        return f"ssh -i {expanded} -p {self.ssh_port} root@{self.public_ip}"
+    def ssh_command(self, identity_file: str) -> str:
+        if not self.is_ssh_ready:
+            raise RuntimeError("SSH is not ready yet.")
+        identity_file = str(Path(identity_file).expanduser())
+        return f"ssh root@{self.public_ip} -p {self.ssh_port} -i {identity_file}"
 
 
 @dataclass(frozen=True)
@@ -70,12 +66,12 @@ class ProvisioningSpec:
 
 
 @dataclass(frozen=True)
-class JobSpec:
+class JobLauncherSpec:
     command: str
     repo_dir: str
     identity_file: str = "~/.ssh/runpod_key"
-    tmux_session_name: str = "job"
-    log_path: str = "/workspace/runs/job.log"
+    tmux_session_name: str = "tmux_job"
+    log_path: str = "/workspace/runs/tmux_job.log"
 
     @property
     def expanded_identity_file(self) -> str:
@@ -91,9 +87,9 @@ class WorkflowOptions:
     terminate_on_failure: bool = False
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
 
-
-@dataclass(frozen=True)
-class RunResult:
-    pod: PodConnectionInfo
-    tmux_session_name: str
-    log_path: str
+# TODO: remove
+# @dataclass(frozen=True)
+# class RunResult:
+#     pod: PodConnectionInfo
+#     tmux_session_name: str
+#     log_path: str

@@ -1,142 +1,135 @@
-# runpod_orchestrator/orchestrator.py
-
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
-from runpod_orchestrator.clients.runpod import RunPodClient
-from runpod_orchestrator.clients.ssh import SSHClient
-from runpod_orchestrator.config import OrchestratorConfig
-from runpod_orchestrator.specs import RunResult
-from runpod_orchestrator.services.job_service import JobService
-from runpod_orchestrator.services.pod_service import PodService, load_bootstrap_as_docker_args
-from runpod_orchestrator.services.provisioning_service import ProvisioningService
+from runpod_orch.clients.runpod import RunPodClient
+from runpod_orch.clients.ssh import SSHClient
+from runpod_orch.config import PodOrchestratorConfig
+from runpod_orch.specs import PodConnectionInfo
+from runpod_orch.services import (
+    PodJobLauncher,
+    PodManager,
+    PodProvisioner,
+)
 
-
-class OrchestratorService:
+class PodOrchestrator:
     """
-    Main public API for pod lifecycle orchestration.
+    Top-level API for pod lifecycle orchestration.
 
-    Exposes a scheduler-like interface:
-      - create
-      - provision
-      - submit
-      - stop
-      - resume
-      - terminate
-      - run
+    Exposes:
+      - create   : create (or reuse) a pod and wait for SSH
+      - provision : run provisioning steps on an existing pod
+      - submit    : launch a job on an existing pod
+      - stop      : stop a pod
+      - resume    : resume a stopped pod
+      - terminate : terminate (delete) a pod
+      - run       : full create -> provision -> submit workflow
     """
 
-    def __init__(self, runpod_client: RunPodClient | None = None) -> None:
-        self.runpod_client = runpod_client or RunPodClient()
-        self.pods = PodService(self.runpod_client)
+    def __init__(
+        self,
+        config: PodOrchestratorConfig,
+        runpod_client: RunPodClient | None = None,
+        pod_manager: PodManager | None = None,
+    ) -> None:
+        self.config = config
+        self._runpod_client = runpod_client or RunPodClient()
+        self.pod_manager = pod_manager or PodManager(self._runpod_client, self.config.pod_spec)
 
-    def create(self, config: OrchestratorConfig) -> RunResult:
-        """
-        Creates a pod according to the given config and waits until it's ready for SSH connections.
-        """
-        docker_args = load_bootstrap_as_docker_args(config.bootstrap_script_path)
-        pod_id = self.pods.resolve_or_create_pod(
-            config.pod_spec,
-            docker_args=docker_args,
-            reuse_if_exists=config.workflow.reuse_if_exists,
-        )
-        conn = self.pods.wait_for_connection_info(
-            pod_id,
-            timeout_s=config.workflow.timeout_s,
-            poll_s=config.workflow.poll_s,
-            retry_policy=config.workflow.retry_policy,
-        )
-        return self._make_run_result(config, conn.pod_id)
+        self.conn: PodConnectionInfo | None = None
 
-    def provision(self, config: OrchestratorConfig, *, pod_id: str) -> RunResult:
-        """
-        Runs provisioning steps on the given pod according to the config.
-        """
-        conn = self.pods.wait_for_connection_info(
-            pod_id,
-            timeout_s=config.workflow.timeout_s,
-            poll_s=config.workflow.poll_s,
-            retry_policy=config.workflow.retry_policy,
-        )
-        ssh = SSHClient(config.provisioning.expanded_identity_file)
-        ProvisioningService(ssh).setup_pod(conn, config.provisioning)
-        return self._make_run_result(config, pod_id)
+    # -- high-level operations --
+    def create(self) -> PodConnectionInfo:
+        docker_args = self.load_bootstrap_as_docker_args(self.config.bootstrap_script_path)
+        try:
+            self.conn = self.pod_manager.resolve_or_create_pod(
+                docker_args=docker_args,
+                reuse_if_exists=self.config.workflow.reuse_if_exists,
+                timeout_s=self.config.workflow.timeout_s,
+                poll_s=self.config.workflow.poll_s,
+                retry_policy=self.config.workflow.retry_policy,
+            )
+            return self.conn
+        except Exception:
+            if self.conn is not None and self.config.workflow.terminate_on_failure:
+                try:
+                    self.terminate(self.conn.pod_id)
+                except Exception:
+                    pass
+            raise
 
-    def submit(self, config: OrchestratorConfig, *, pod_id: str) -> RunResult:
-        """
-        Submits the run job to the given pod according to the config.
-        """
-        conn = self.pods.wait_for_connection_info(
-            pod_id,
-            timeout_s=config.workflow.timeout_s,
-            poll_s=config.workflow.poll_s,
-            retry_policy=config.workflow.retry_policy,
-        )
-        ssh = SSHClient(config.job_spec.expanded_identity_file)
-        JobService(ssh).launch_job(conn, config.job_spec)
-        return self._make_run_result(config, pod_id)
+    def provision(self, conn: PodConnectionInfo | None = None) -> None:
+        conn = conn or self.conn
+        ssh_client = self.make_ssh_client()
+        pod_provisioner = PodProvisioner(ssh_client, self.config.provisioning)
+        pod_provisioner.copy_rclone_config(conn)
+        pod_provisioner.clone_or_update_repo(conn)
+        pod_provisioner.poetry_install(conn)
+        pod_provisioner.create_jupyter_kernel(conn)
+        
+        
+    def submit(self, conn: PodConnectionInfo | None = None) -> str:
+        conn = conn or self.conn
+        ssh_client = self.make_ssh_client()
+        return PodJobLauncher(ssh_client, self.config.job_launcher_spec).launch_tmux_job(conn)
 
     def stop(self, pod_id: str) -> None:
-        """
-        Stops the given pod.
-        """
-        self.pods.stop_pod(pod_id)
+        self.pod_manager.stop_pod(
+            pod_id, retry_policy=self.config.workflow.retry_policy
+        )
 
-    def resume(self, config: OrchestratorConfig, *, pod_id: str) -> RunResult:
-        """
-        Resumes the given pod and waits until it's ready for SSH connections.
-        """
-        self.pods.resume_pod(pod_id)
-        return self._make_run_result(
-            config,
-            self.pods.wait_for_connection_info(
-                pod_id,
-                timeout_s=config.workflow.timeout_s,
-                poll_s=config.workflow.poll_s,
-                retry_policy=config.workflow.retry_policy,
-            ).pod_id,
+    def resume(self, pod_id: str) -> PodConnectionInfo:
+        self.pod_manager.resume_pod(pod_id)
+        return self.pod_manager.wait_for_ssh_ready(
+            pod_id,
+            timeout_s=self.config.workflow.timeout_s,
+            poll_s=self.config.workflow.poll_s,
+            retry_policy=self.config.workflow.retry_policy,
+            identity_file=self.config.pod_spec.expanded_identity_file,
         )
 
     def terminate(self, pod_id: str) -> None:
-        """
-        Terminates the given pod.
-        """
-        self.pods.terminate_pod(pod_id)
-
-    def run(self, config: OrchestratorConfig) -> RunResult:
-        """
-        Runs the full create+provision+submit workflow according to the config and returns the result.
-        """
-        created = self.create(config)
-        try:
-            self.provision(config, pod_id=created.pod.pod_id)
-            result = self.submit(config, pod_id=created.pod.pod_id)
-
-            if config.workflow.terminate_after_launch:
-                self.terminate(result.pod.pod_id)
-
-            return result
-        except Exception:
-            if config.workflow.terminate_on_failure:
-                self.terminate(created.pod.pod_id)
-            raise
-
-    def _make_run_result(self, config: OrchestratorConfig, pod_id: str) -> RunResult:
-        """
-        Creates a RunResult object for the given pod and config.
-        """
-        conn = self.pods.get_connection_info(pod_id)
-        return RunResult(
-            pod=conn,
-            tmux_session_name=config.job_spec.tmux_session_name,
-            log_path=config.job_spec.log_path,
+        self.pod_manager.terminate_pod(
+            pod_id, retry_policy=self.config.workflow.retry_policy
         )
 
+    def run(self) -> PodConnectionInfo:
+        try:
+            self.conn = self.create()
+            self.provision(self.conn)
+            self.submit(self.conn)
+
+            if self.config.workflow.terminate_after_launch:
+                self.terminate(self.conn.pod_id)
+
+            return self.conn
+        except Exception:
+            if self.conn is not None and self.config.workflow.terminate_on_failure:
+                self.terminate(self.conn.pod_id)
+            raise
+
+    # -- convenience --
+    def make_ssh_client(self) -> SSHClient:
+        return SSHClient(self.config.provisioning.expanded_identity_file)
+    
     @classmethod
-    def from_yaml(cls, path: str | Path) -> tuple["OrchestratorService", OrchestratorConfig]:
+    def from_yaml(cls, path: str | Path) -> PodOrchestrator:
+        config = PodOrchestratorConfig.from_yaml(path)
+        return cls(config=config)
+
+    @staticmethod
+    def load_bootstrap_as_docker_args(path: str | Path) -> str:
         """
-        Creates an OrchestratorService instance and loads the configuration from a YAML file.
+        Encode a bootstrap script file as docker `docker_args` for pod creation.
+
+        The script is base64-encoded and returned as a shell command string
+        suitable for passing to the pod's docker args.
         """
-        config = OrchestratorConfig.from_yaml(path)
-        return cls(), config
+        script = Path(path).expanduser().resolve().read_text(encoding="utf-8")
+        encoded = base64.b64encode(script.encode("utf-8")).decode("utf-8")
+        return (
+            "bash -lc "
+            f"'echo {encoded} | base64 --decode > /tmp/bootstrap.sh "
+            "&& bash /tmp/bootstrap.sh'"
+        )
