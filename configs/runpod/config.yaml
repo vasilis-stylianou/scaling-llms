@@ -1,7 +1,7 @@
-# Minimal but realistic config for integration tests
+work_dir: ~/Desktop/scaling-llms # fix this bug
 
 pod_spec:
-  name: test-scaling-llms-e2e
+  name: test-run-experiments
   image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   gpu_type_id: NVIDIA A100-SXM4-80GB
   cloud_type: SECURE
@@ -24,14 +24,14 @@ provisioning:
   kernel_display_name: "Python (scaling-llms)"
   poetry_install_args: []
 
-job_spec:
+job_launcher_spec:
+  repo_dir: /workspace/repos/scaling-llms # to rename: work_dir
   command: >
     poetry run python scripts/run_experiments.py
-    tests/integration/run_experiments/conifgs/experiments/rclone_sync_test.yaml
-  repo_dir: /workspace/repos/scaling-llms
+    src/scaling_llms/experiment_configs/tests/rclone_sync_runs.py
   identity_file: ~/.ssh/runpod_key
-  tmux_session_name: train
-  log_path: /workspace/runs/train.log
+  tmux_session_name: test_run_experiments_session
+  log_path: /workspace/jobs/test_run_experiments_session.log
 
 workflow:
   reuse_if_exists: false

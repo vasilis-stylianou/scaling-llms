@@ -30,6 +30,23 @@ def test_provision_pod(orchestrator, unique_config, pod_tracker):
     assert "repo-ready" in proc.stdout
 
 
+def test_provision_poetry_can_import_scaling_llms(orchestrator, unique_config, pod_tracker):
+    created = orchestrator.create(unique_config)
+    pod_tracker(created.pod.pod_id)
+
+    result = orchestrator.provision(unique_config, pod_id=created.pod.pod_id)
+
+    ssh = SSHClient(unique_config.provisioning.expanded_identity_file)
+    proc = ssh.run(
+        result.pod,
+        (
+            "cd /workspace/repos/scaling-llms && "
+            "poetry run python -c \"import scaling_llms; print('scaling-llms-import-ok')\""
+        ),
+    )
+    assert "scaling-llms-import-ok" in proc.stdout
+
+
 def test_submit_job(orchestrator, unique_config, pod_tracker):
     created = orchestrator.create(unique_config)
     pod_tracker(created.pod.pod_id)
@@ -82,10 +99,3 @@ def test_run_end_to_end(orchestrator, unique_config, pod_tracker):
     ssh = SSHClient(config.job_spec.expanded_identity_file)
     proc = ssh.run(result.pod, "sleep 2 && cat /workspace/jobs/e2e-job.log")
     assert "end-to-end ok" in proc.stdout
-
-
-def test_terminate_pod(orchestrator, unique_config, pod_tracker):
-    created = orchestrator.create(unique_config)
-    pod_tracker(created.pod.pod_id)
-
-    orchestrator.terminate(created.pod.pod_id)

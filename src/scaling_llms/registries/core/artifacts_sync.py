@@ -14,6 +14,19 @@ class ArtifactsSyncHooks:
 
 
 class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
+    _DEFAULT_COMMON_ARGS = [
+        "--fast-list",
+        "--checkers", "32",
+        "--transfers", "16",
+    ]
+    _DEFAULT_PUSH_ARGS = [
+        "--s3-upload-concurrency", "16",
+        "--create-empty-src-dirs",
+    ]
+    _DEFAULT_PULL_ARGS = [
+        "--create-empty-src-dirs",
+    ]
+    
     def __init__(
         self,
         *,
@@ -21,9 +34,11 @@ class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
         remote_rclone_name: str,
         remote_artifacts_root: str,
         push_mode: str = "copy",
-        pull_mode: str = "copy",
+        pull_mode: str = "sync",
         rclone_executable: str = "rclone",
-        extra_args: list[str] | None = None,
+        global_args: list[str] | None = None,
+        push_args: list[str] | None = None,
+        pull_args: list[str] | None = None,
     ):
         remote_name = remote_rclone_name.strip()
         remote_root = remote_artifacts_root.strip().strip("/")
@@ -43,11 +58,15 @@ class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
         self.push_mode = push_mode
         self.pull_mode = pull_mode
         self.rclone_executable = rclone_executable
-        self.extra_args = extra_args
+
+        self.global_args = list(global_args or [])
+        self.push_args = list(push_args or [])
+        self.pull_args = list(pull_args or [])
 
         self._ensure_rclone_available()
 
     # ---------- internal helpers ----------
+
     def _ensure_rclone_available(self) -> None:
         if shutil.which(self.rclone_executable) is None:
             raise RuntimeError(f"rclone executable not found: {self.rclone_executable}")
@@ -83,54 +102,72 @@ class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
         rel = relative_artifacts_path.as_posix()
         return f"{self.remote_artifacts_root}/{rel}" if rel else self.remote_artifacts_root
 
+    def _build_command(
+        self,
+        *,
+        mode: str,
+        src: str,
+        dst: str,
+        op_args: list[str] | None = None,
+    ) -> list[str]:
+        command = [self.rclone_executable, mode, src, dst]
+        command.extend(self._DEFAULT_COMMON_ARGS)
+        command.extend(self.global_args)
+        if op_args:
+            command.extend(op_args)
+        return command
+
     def _remote_exists(self, remote_path: str) -> bool:
-        command = [self.rclone_executable, "lsf", remote_path]
-        if self.extra_args:
-            command.extend(self.extra_args)
+        command = [
+            self.rclone_executable,
+            "lsjson",
+            remote_path,
+            "--max-depth",
+            "1",
+            *self._DEFAULT_COMMON_ARGS,
+            *self.global_args,
+        ]
         try:
             subprocess.run(command, check=True, text=True, capture_output=True)
             return True
         except subprocess.CalledProcessError as exc:
             details = ((exc.stderr or "").strip() or (exc.stdout or "").strip()).lower()
-            if "directory not found" in details or "object not found" in details:
+            if (
+                "directory not found" in details
+                or "object not found" in details
+                or "not found" in details
+            ):
                 return False
-            raise
-        
+            raise RuntimeError(
+                f"rclone existence check failed: {' '.join(command)}\n{details}"
+            ) from exc
+
     def _sync_local_to_remote(self, local_artifacts_path: Path, remote_path: str) -> None:
         src = Path(local_artifacts_path).expanduser().resolve()
         if not src.exists():
             raise FileNotFoundError(f"local_artifacts_path does not exist: {src}")
 
-        command = [
-            self.rclone_executable,
-            self.push_mode,
-            str(src),
-            remote_path,
-            "--create-empty-src-dirs",
-        ]
-        if self.extra_args:
-            command.extend(self.extra_args)
-
+        command = self._build_command(
+            mode=self.push_mode,
+            src=str(src),
+            dst=remote_path,
+            op_args=[*self._DEFAULT_PUSH_ARGS, *self.push_args],
+        )
         self._run_rclone(command)
 
     def _sync_remote_to_local(self, remote_path: str, local_artifacts_path: Path) -> None:
-        # If remote artifacts do not exist → no-op
         if not self._remote_exists(remote_path):
             return
 
         dst = Path(local_artifacts_path).expanduser().resolve()
         dst.mkdir(parents=True, exist_ok=True)
 
-        command = [
-            self.rclone_executable,
-            self.pull_mode,
-            remote_path,
-            str(dst),
-            "--create-empty-src-dirs",
-        ]
-        if self.extra_args:
-            command.extend(self.extra_args)
-
+        command = self._build_command(
+            mode=self.pull_mode,
+            src=remote_path,
+            dst=str(dst),
+            op_args=[*self._DEFAULT_PULL_ARGS, *self.pull_args],
+        )
         self._run_rclone(command)
 
     # ---------- public API ----------
@@ -159,5 +196,8 @@ def make_sync_hooks(
     if sync_hooks_type == "rclone":
         if sync_hooks_args is None:
             raise ValueError("sync_hooks_args must be provided if sync_hooks_type is specified")
-        return RCloneArtifactsSyncHooks(local_artifacts_root=local_artifacts_root, **sync_hooks_args)
+        return RCloneArtifactsSyncHooks(
+            local_artifacts_root=local_artifacts_root,
+            **sync_hooks_args,
+        )
     raise ValueError(f"Unsupported sync_hooks_type: {sync_hooks_type}")

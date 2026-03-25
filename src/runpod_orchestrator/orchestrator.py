@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import base64
+import os
 from pathlib import Path
 
-from runpod_orch.clients.runpod import RunPodClient
-from runpod_orch.clients.ssh import SSHClient
-from runpod_orch.config import PodOrchestratorConfig
-from runpod_orch.specs import PodConnectionInfo
-from runpod_orch.services import (
-    PodJobLauncher,
+from runpod_orchestrator.specs import CommandSpec, ProvisioningSpec
+from runpod_orchestrator.clients.ssh import SSHClient
+from runpod_orchestrator.config import PodOrchestratorConfig
+from runpod_orchestrator.services import (
+    PodConnectionInfo,
     PodManager,
-    PodProvisioner,
+    PodSSHOperator,
 )
 
-class PodOrchestrator:
+class PodOrchestrator(PodSSHOperator, PodManager):
     """
     Top-level API for pod lifecycle orchestration.
 
@@ -27,109 +26,109 @@ class PodOrchestrator:
       - run       : full create -> provision -> submit workflow
     """
 
-    def __init__(
-        self,
-        config: PodOrchestratorConfig,
-        runpod_client: RunPodClient | None = None,
-        pod_manager: PodManager | None = None,
-    ) -> None:
-        self.config = config
-        self._runpod_client = runpod_client or RunPodClient()
-        self.pod_manager = pod_manager or PodManager(self._runpod_client, self.config.pod_spec)
+    def __init__(self, config: PodOrchestratorConfig) -> None:
+        self._config = config
+        self.pod_spec = config.pod_spec
+        self.provisioning_spec = config.provisioning
+        self.command_spec = config.command_spec
+        self.identity_file = config.identity_file
+        self.workflow = config.workflow
+        
+        ssh = SSHClient(config.identity_file)
+
+        PodSSHOperator.__init__(self, ssh_client=ssh)
+        PodManager.__init__(self, api_key=config.runpod_api_key, ssh_client=ssh)
 
         self.conn: PodConnectionInfo | None = None
+        self.ssh = ssh
 
     # -- high-level operations --
     def create(self) -> PodConnectionInfo:
-        docker_args = self.load_bootstrap_as_docker_args(self.config.bootstrap_script_path)
         try:
-            self.conn = self.pod_manager.resolve_or_create_pod(
-                docker_args=docker_args,
-                reuse_if_exists=self.config.workflow.reuse_if_exists,
-                timeout_s=self.config.workflow.timeout_s,
-                poll_s=self.config.workflow.poll_s,
-                retry_policy=self.config.workflow.retry_policy,
+            self.conn = self.resolve_or_create_pod(
+                self.pod_spec,
+                reuse_if_exists=self.workflow.reuse_if_exists,
+                timeout_s=self.workflow.timeout_s,
+                poll_s=self.workflow.poll_s,
+                retry_policy=self.workflow.retry_policy,
             )
             return self.conn
         except Exception:
-            if self.conn is not None and self.config.workflow.terminate_on_failure:
+            if self.conn is not None and self.workflow.terminate_on_failure:
                 try:
                     self.terminate(self.conn.pod_id)
                 except Exception:
                     pass
             raise
 
-    def provision(self, conn: PodConnectionInfo | None = None) -> None:
+    def provision(
+        self, 
+        conn: PodConnectionInfo | None = None, 
+        spec: ProvisioningSpec | None = None
+    ) -> None:
         conn = conn or self.conn
-        ssh_client = self.make_ssh_client()
-        pod_provisioner = PodProvisioner(ssh_client, self.config.provisioning)
-        pod_provisioner.copy_rclone_config(conn)
-        pod_provisioner.clone_or_update_repo(conn)
-        pod_provisioner.poetry_install(conn)
-        pod_provisioner.create_jupyter_kernel(conn)
+        spec = spec or self.provisioning_spec
+        self.copy_rclone_config(conn, spec)
+        self.clone_or_update_repo(conn, spec)
+        self.copy_env_file(conn, spec)
+        self.poetry_install(conn, spec)
+        
+        # self.create_jupyter_kernel(conn, spec)
         
         
-    def submit(self, conn: PodConnectionInfo | None = None) -> str:
+    def submit_job(self, conn: PodConnectionInfo | None = None, spec: CommandSpec | None = None) -> str:
         conn = conn or self.conn
-        ssh_client = self.make_ssh_client()
-        return PodJobLauncher(ssh_client, self.config.job_launcher_spec).launch_tmux_job(conn)
+        spec = spec or self.command_spec
+        return self.launch_tmux_job(conn, spec)
 
-    def stop(self, pod_id: str) -> None:
-        self.pod_manager.stop_pod(
-            pod_id, retry_policy=self.config.workflow.retry_policy
+    def stop(self, pod_id: str | None = None) -> None:
+        pod_id = pod_id or (self.conn.pod_id if self.conn else None)
+        if pod_id is None:
+            raise ValueError("No pod_id provided and no active connection available.")
+        self.stop_pod(
+            pod_id, retry_policy=self.workflow.retry_policy
         )
 
-    def resume(self, pod_id: str) -> PodConnectionInfo:
-        self.pod_manager.resume_pod(pod_id)
-        return self.pod_manager.wait_for_ssh_ready(
+    def resume(self, pod_id: str | None = None) -> PodConnectionInfo:
+        pod_id = pod_id or (self.conn.pod_id if self.conn else None)
+        if pod_id is None:
+            raise ValueError("No pod_id provided and no active connection available.")
+        self.resume_pod(pod_id)
+        return self.wait_for_ssh_ready(
             pod_id,
-            timeout_s=self.config.workflow.timeout_s,
-            poll_s=self.config.workflow.poll_s,
-            retry_policy=self.config.workflow.retry_policy,
-            identity_file=self.config.pod_spec.expanded_identity_file,
+            timeout_s=self.workflow.timeout_s,
+            poll_s=self.workflow.poll_s,
+            retry_policy=self.workflow.retry_policy,
         )
 
-    def terminate(self, pod_id: str) -> None:
-        self.pod_manager.terminate_pod(
-            pod_id, retry_policy=self.config.workflow.retry_policy
+    def terminate(self, pod_id: str | None = None) -> None:
+        pod_id = pod_id or (self.conn.pod_id if self.conn else None)
+        if pod_id is None:
+            raise ValueError("No pod_id provided and no active connection available.")
+        self.terminate_pod(
+            pod_id, retry_policy=self.workflow.retry_policy
         )
 
     def run(self) -> PodConnectionInfo:
         try:
             self.conn = self.create()
             self.provision(self.conn)
-            self.submit(self.conn)
+            self.submit_job(self.conn)
 
-            if self.config.workflow.terminate_after_launch:
+            if self.workflow.terminate_after_launch:
                 self.terminate(self.conn.pod_id)
 
             return self.conn
         except Exception:
-            if self.conn is not None and self.config.workflow.terminate_on_failure:
+            if self.conn is not None and self.workflow.terminate_on_failure:
                 self.terminate(self.conn.pod_id)
             raise
 
     # -- convenience --
-    def make_ssh_client(self) -> SSHClient:
-        return SSHClient(self.config.provisioning.expanded_identity_file)
+    def set_ssh_client(self) -> None:
+        self.ssh = SSHClient(self.identity_file)
     
     @classmethod
     def from_yaml(cls, path: str | Path) -> PodOrchestrator:
         config = PodOrchestratorConfig.from_yaml(path)
         return cls(config=config)
-
-    @staticmethod
-    def load_bootstrap_as_docker_args(path: str | Path) -> str:
-        """
-        Encode a bootstrap script file as docker `docker_args` for pod creation.
-
-        The script is base64-encoded and returned as a shell command string
-        suitable for passing to the pod's docker args.
-        """
-        script = Path(path).expanduser().resolve().read_text(encoding="utf-8")
-        encoded = base64.b64encode(script.encode("utf-8")).decode("utf-8")
-        return (
-            "bash -lc "
-            f"'echo {encoded} | base64 --decode > /tmp/bootstrap.sh "
-            "&& bash /tmp/bootstrap.sh'"
-        )

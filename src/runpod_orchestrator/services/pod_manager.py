@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-
 import logging
+import os
 import time
 from typing import Any, Callable, TypeVar
 
-from runpod_orch.clients import RunPodClient
-from runpod_orch.clients import SSHClient
-from runpod_orch.exceptions import PodNotReadyError, RunPodError
-from runpod_orch.specs import PodConnectionInfo, PodSpec, RetryPolicy
+import runpod
+
+from runpod_orchestrator.clients import SSHClient
+from runpod_orchestrator.exceptions import PodNotReadyError, RunPodError
+from runpod_orchestrator.specs import PodConnectionInfo, PodSpec, RetryPolicy
 
 
 T = TypeVar("T")
@@ -52,9 +53,41 @@ def with_retries(
 class PodManager:
     """Manages pod lifecycle: create, stop, resume, terminate, and readiness polling."""
 
-    def __init__(self, client: RunPodClient, spec: PodSpec) -> None:
-        self.runpod_client = client
-        self.spec = spec
+    def __init__(
+        self,
+        api_key: str | None = None, 
+        ssh_client: SSHClient | None = None,
+    ) -> None:
+        self._api_key = api_key or os.getenv("RUNPOD_API_KEY")
+        if not self._api_key:
+            raise RunPodError("RUNPOD_API_KEY is not set")
+        runpod.api_key = self._api_key
+
+        self.ssh = ssh_client
+
+    def set_ssh_client(self, ssh_client: SSHClient) -> None:
+        self.ssh = ssh_client
+
+    # --- POD REGISTRY ---
+    def list_pods(self) -> list[dict[str, Any]]:
+        result = runpod.get_pods()
+        if not isinstance(result, list):
+            raise RunPodError(f"Unexpected get_pods() response: {result!r}")
+        return result
+
+    def find_pod_by_name(self, name: str) -> dict[str, Any] | None:
+        for pod in self.list_pods():
+            if pod.get("name") == name:
+                return pod
+        return None
+
+    def get_pod(self, pod_id: str) -> dict[str, Any]:
+        pod = runpod.get_pod(pod_id)
+        if pod is None:
+            raise RunPodError(f"Pod {pod_id} not found")
+        if not isinstance(pod, dict):
+            raise RunPodError(f"Unexpected get_pod() response: {pod}")
+        return pod
 
     # --- POD READINESS ---
     def wait_for_ssh_ready(
@@ -64,7 +97,6 @@ class PodManager:
         timeout_s: int,
         poll_s: int,
         retry_policy: RetryPolicy,
-        identity_file: str | None = None,
     ) -> PodConnectionInfo:
         """
         Wait until the pod's SSH becomes reachable and return its connection info.
@@ -75,7 +107,8 @@ class PodManager:
         
         deadline = time.time() + timeout_s
         last_info: PodConnectionInfo | None = None
-        identity = identity_file or "~/.ssh/runpod_key"
+        if self.ssh is None:
+            raise ValueError("SSH client is required for SSH readiness check")
 
         while time.time() < deadline:
             pod = self._get_pod_by_id(pod_id, retry_policy=retry_policy)
@@ -83,7 +116,7 @@ class PodManager:
             last_info = info
 
             if info.is_ssh_ready:
-                ssh = SSHClient(identity)
+                ssh = self.ssh
                 if ssh.probe_connectivity(info):
                     return info
 
@@ -93,10 +126,10 @@ class PodManager:
             f"Timed out waiting for pod SSH readiness. Last info: {last_info}"
         )
 
-    # --- LIFECYCLE ---
+    # --- POD LIFECYCLE ---
     def create_pod(
         self,
-        docker_args: str,
+        spec: PodSpec,
         *,
         retry_policy: RetryPolicy,
     ) -> dict[str, Any]:
@@ -106,20 +139,14 @@ class PodManager:
         Applies the provided retry policy and validates the returned payload.
         """
         pod = with_retries(
-            self.runpod_client.create_pod,
-            name=self.spec.name,
-            image_name=self.spec.image_name,
-            gpu_type_id=self.spec.gpu_type_id,
-            cloud_type=self.spec.cloud_type,
-            container_disk_in_gb=self.spec.container_disk_in_gb,
-            volume_in_gb=self.spec.volume_in_gb,
-            ports=self.spec.ports,
-            env=self.spec.env,
-            docker_args=docker_args,
+            runpod.create_pod,
             retry_policy=retry_policy,
+            **spec.create_pod_sdk_args,
         )
         if not isinstance(pod, dict):
-            raise RuntimeError(f"Unexpected create_pod() response: {pod}")
+            raise RunPodError(f"Unexpected create_pod() response: {pod!r}")
+        if pod.get("id") is None:
+            raise RunPodError(f"RunPod create_pod() failed: {pod!r}")
         return pod
     
     def stop_pod(
@@ -130,14 +157,13 @@ class PodManager:
         """
         Request a pod stop operation via the RunPod API with retries.
 
-        Delegates to the RunPod `stop_pod` API and applies the retry policy.
+        Calls the RunPod `stop_pod` API and applies the retry policy.
         """
+        with_retries(runpod.stop_pod, pod_id, retry_policy=retry_policy)
 
-        with_retries(self.runpod_client.stop_pod, pod_id, retry_policy=retry_policy)
-
-    def resume_pod(self, pod_id: str) -> None:
+    def resume_pod(self, pod_id: str, gpu_count: int = 1) -> None:
         try:
-            self.runpod_client.resume_pod(pod_id)
+            runpod.resume_pod(pod_id=pod_id, gpu_count=gpu_count)
         except Exception as exc:
             raise RunPodError(f"Failed to resume pod {pod_id}") from exc
 
@@ -158,7 +184,7 @@ class PodManager:
         # Phase 1: send terminate request
         for attempt in range(1, retry_policy.max_attempts + 1):
             try:
-                response = self.runpod_client.terminate_pod(pod_id)
+                response = runpod.terminate_pod(pod_id)
                 api_error = self._extract_api_error(response)
 
                 if api_error:
@@ -250,8 +276,8 @@ class PodManager:
     
     def resolve_or_create_pod(
         self,
+        spec: PodSpec,
         *,
-        docker_args: str,
         reuse_if_exists: bool,
         timeout_s: int = 60,
         poll_s: int = 5,
@@ -267,7 +293,7 @@ class PodManager:
         existing: dict[str, Any] | None = None
         if reuse_if_exists:
             existing = self._wait_until_pod_visible_by_name(
-                self.spec.name,
+                spec.name,
                 timeout_s=min(timeout_s, 60),
                 poll_s=max(1, poll_s),
                 retry_policy=retry_policy,
@@ -286,17 +312,16 @@ class PodManager:
                 timeout_s=timeout_s,
                 poll_s=poll_s,
                 retry_policy=retry_policy,
-                identity_file=self.spec.expanded_identity_file,
             )
 
         created = self.create_pod(
-            docker_args=docker_args,
+            spec,
             retry_policy=retry_policy,
         )
         pod_id = created.get("id") or created.get("_id")
 
         if not pod_id:
-            found = self._find_pod_by_name(self.spec.name, retry_policy=retry_policy)
+            found = self._find_pod_by_name(spec.name, retry_policy=retry_policy)
             if not found:
                 raise RuntimeError(
                     f"Could not determine pod id after create: {created}"
@@ -308,7 +333,6 @@ class PodManager:
             timeout_s=timeout_s,
             poll_s=poll_s,
             retry_policy=retry_policy,
-            identity_file=self.spec.expanded_identity_file,
         )
 
     
@@ -331,7 +355,7 @@ class PodManager:
         Returns the matching pod dict when found, or `None` if no match exists.
         """
         pods = with_retries(
-            self.runpod_client.list_pods, retry_policy=retry_policy
+            self.list_pods, retry_policy=retry_policy
         )
         for pod in pods:
             if pod.get("name") == name:
@@ -344,7 +368,7 @@ class PodManager:
         Raises a `RuntimeError` if the response is missing or malformed.
         """
 
-        pod = with_retries(self.runpod_client.get_pod, pod_id, retry_policy=retry_policy)
+        pod = with_retries(self.get_pod, pod_id, retry_policy=retry_policy)
 
         if pod is None:
             raise RuntimeError(f"Pod {pod_id} not found")
@@ -377,7 +401,7 @@ class PodManager:
         retry_policy: RetryPolicy,
     ) -> bool:
         pods = with_retries(
-            self.runpod_client.list_pods, retry_policy=retry_policy
+            self.list_pods, retry_policy=retry_policy
         )
         return not any(
             (p.get("id") or p.get("_id")) == pod_id for p in pods

@@ -12,6 +12,13 @@ from runpod_orchestrator.config import OrchestratorConfig
 from runpod_orchestrator.orchestrator import OrchestratorService
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
+
+
 class IntegrationConfig:
     def __init__(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
@@ -66,7 +73,7 @@ def unique_config(base_config: OrchestratorConfig) -> OrchestratorConfig:
 
 
 @pytest.fixture
-def pod_tracker(orchestrator: OrchestratorService):
+def pod_tracker(orchestrator: OrchestratorService, request: pytest.FixtureRequest):
     created: list[str] = []
     terminated: set[str] = set()
 
@@ -75,6 +82,12 @@ def pod_tracker(orchestrator: OrchestratorService):
             created.append(pod_id)
 
     yield _track
+
+    call_report = getattr(request.node, "rep_call", None)
+    if call_report is not None and call_report.failed:
+        if created:
+            print("[runpod-e2e] test failed, keeping pods:", ", ".join(created))
+        return
 
     errors: list[str] = []
     for pod_id in reversed(created):

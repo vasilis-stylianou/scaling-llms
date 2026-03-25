@@ -5,7 +5,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from runpod_orch.specs import PodConnectionInfo
+from runpod_orchestrator.specs import PodConnectionInfo
 
 logger = logging.getLogger(__name__)
 

@@ -7,9 +7,9 @@ from typing import Any
 
 import yaml
 
-from runpod_orch.exceptions import ConfigError
-from runpod_orch.specs import (
-    JobLauncherSpec,
+from runpod_orchestrator.exceptions import ConfigError
+from runpod_orchestrator.specs import (
+    CommandSpec,
     PodSpec,
     ProvisioningSpec,
     RetryPolicy,
@@ -37,18 +37,12 @@ def _require_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
 @dataclass(frozen=True)
 class PodOrchestratorConfig:
     pod_spec: PodSpec
-    bootstrap_script: str
     provisioning: ProvisioningSpec
-    job_launcher_spec: JobLauncherSpec
+    command_spec: CommandSpec
+    identity_file: str
+    runpod_api_key: str | None = None
     work_dir: str | None = None
     workflow: WorkflowOptions = field(default_factory=WorkflowOptions)
-
-    @property
-    def bootstrap_script_path(self) -> Path:
-        if self.work_dir:
-            return Path(self.work_dir).expanduser().resolve() / Path(self.bootstrap_script)
-        else:
-            return Path(self.bootstrap_script).expanduser().resolve()
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> PodOrchestratorConfig:
@@ -57,22 +51,23 @@ class PodOrchestratorConfig:
 
         pod_data = _require_dict(data, "pod_spec")
         provisioning_data = _require_dict(data, "provisioning")
-        job_launcher_data = _require_dict(data, "job_launcher_spec")
+        command_data = _require_dict(data, "command_spec")
         workflow_data = data.get("workflow", {}) or {}
         retry_data = workflow_data.get("retry_policy", {}) or {}
 
-        pod_identity_file = str(pod_data.get("identity_file", "~/.ssh/runpod_key"))
+        identity_file = str(pod_data.get("identity_file", "~/.ssh/runpod_key"))
+        runpod_api_key = str(data.get("runpod_api_key")) if data.get("runpod_api_key") is not None else None
 
         try:
             pod_spec = PodSpec(
                 name=str(pod_data["name"]),
                 image_name=str(pod_data["image_name"]),
-                gpu_type_id=str(pod_data["gpu_type_id"]),
+                gpu_type_id=str(pod_data["gpu_type_id"]) if "gpu_type_id" in pod_data else None,
+                cpu_type_id=str(pod_data["cpu_type_id"]) if "cpu_type_id" in pod_data else None,
                 cloud_type=str(pod_data.get("cloud_type", "SECURE")),
-                container_disk_in_gb=int(pod_data.get("container_disk_in_gb", 20)),
-                volume_in_gb=int(pod_data.get("volume_in_gb", 40)),
+                container_disk_in_gb=int(pod_data.get("container_disk_in_gb", 15)),
+                volume_in_gb=int(pod_data.get("volume_in_gb", 20)),
                 ports=str(pod_data.get("ports", "22/tcp")),
-                identity_file=pod_identity_file,
                 env=_expand_env_mapping(pod_data.get("env")),
             )
         except KeyError as exc:
@@ -86,9 +81,6 @@ class PodOrchestratorConfig:
                     str(provisioning_data["repo_branch"])
                     if provisioning_data.get("repo_branch") is not None
                     else None
-                ),
-                identity_file=str(
-                    provisioning_data.get("identity_file", pod_identity_file)
                 ),
                 rclone_config_local=(
                     str(provisioning_data["rclone_config_local"])
@@ -112,26 +104,24 @@ class PodOrchestratorConfig:
                     str(arg)
                     for arg in (provisioning_data.get("poetry_install_args", []) or [])
                 ],
+                env_file_local=(
+                    str(provisioning_data["env_file_local"])
+                    if provisioning_data.get("env_file_local") is not None
+                    else None
+                ),
             )
         except KeyError as exc:
             raise ConfigError(f"Missing provisioning field: {exc.args[0]}") from exc
 
         try:
-            job_launcher_spec = JobLauncherSpec(
-                command=str(job_launcher_data["command"]),
-                repo_dir=str(job_launcher_data.get("repo_dir", provisioning.repo_dir)),
-                identity_file=str(
-                    job_launcher_data.get("identity_file", pod_identity_file)
-                ),
-                tmux_session_name=str(job_launcher_data.get("tmux_session_name", "job")),
-                log_path=str(job_launcher_data.get("log_path", "/workspace/runs/job.log")),
+            command_spec = CommandSpec(
+                command=str(command_data["command"]),
+                work_dir=str(command_data.get("repo_dir", provisioning.repo_dir)),
+                tmux_session_name=str(command_data.get("tmux_session_name", "job")),
+                log_path=str(command_data.get("log_path", "/workspace/tmux_logs/job.log")),
             )
         except KeyError as exc:
-            raise ConfigError(f"Missing job_launcher_spec field: {exc.args[0]}") from exc
-
-        bootstrap_script = data.get("bootstrap_script")
-        if bootstrap_script is None:
-            raise ConfigError("Missing 'bootstrap_script'")
+            raise ConfigError(f"Missing command_spec field: {exc.args[0]}") from exc
 
         workflow = WorkflowOptions(
             reuse_if_exists=bool(workflow_data.get("reuse_if_exists", True)),
@@ -151,9 +141,11 @@ class PodOrchestratorConfig:
 
         return cls(
             pod_spec=pod_spec,
-            bootstrap_script=str(bootstrap_script),
             provisioning=provisioning,
-            job_launcher_spec=job_launcher_spec,
+            command_spec=command_spec,
             workflow=workflow,
-            work_dir=data.get("work_dir"),
+            identity_file=identity_file,
+            runpod_api_key=runpod_api_key,
+            work_dir=data.get("work_dir"),  # TODO
+
         )

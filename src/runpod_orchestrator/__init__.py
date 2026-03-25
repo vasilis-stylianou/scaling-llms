@@ -1,8 +1,8 @@
-from runpod_orch.config import PodOrchestratorConfig
-from runpod_orch.orchestrator import PodOrchestrator
-from runpod_orch.specs import (
-    JobLauncherSpec,
-    PodConnectionInfo,
+from .config import PodOrchestratorConfig
+from .orchestrator import PodOrchestrator
+from .services.pod_manager import PodConnectionInfo
+from .specs import (
+    CommandSpec,
     PodSpec,
     ProvisioningSpec,
     RetryPolicy,
@@ -10,9 +10,10 @@ from runpod_orch.specs import (
 )
 
 __all__ = [
+    "PodConnectionInfo",
     "PodOrchestrator",
     "PodOrchestratorConfig",
-    "JobLauncherSpec",
+    "CommandSpec",
     "PodConnectionInfo",
     "PodSpec",
     "ProvisioningSpec",

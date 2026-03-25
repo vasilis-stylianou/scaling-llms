@@ -33,7 +33,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "config_path",
         nargs="?",
-        default="configs/experiments/remote_smoke.yaml",
         help="Path to experiment runtime YAML config",
     )
     return parser.parse_args()

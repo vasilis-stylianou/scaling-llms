@@ -29,5 +29,5 @@ class ProvisioningError(OrchestratorError):
     pass
 
 
-class JobError(OrchestratorError):
+class CommandError(OrchestratorError):
     pass
