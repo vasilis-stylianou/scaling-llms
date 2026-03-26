@@ -71,6 +71,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         self.clone_or_update_repo(conn, spec)
         self.copy_env_file(conn, spec)
         self.poetry_install(conn, spec)
+        self.install_tmux(conn)
         
         # self.create_jupyter_kernel(conn, spec)
         

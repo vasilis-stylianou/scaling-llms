@@ -41,6 +41,7 @@ def _build_tmux_job_command(spec: CommandSpec) -> str:
             f'echo "Working directory does not exist: {work_dir_raw}" >&2; '
             "exit 1; "
             "fi; "
+            'export PATH="$HOME/.local/bin:$PATH"; '
             f"{command} 2>&1 | tee -a {log_path}"
         )
     else:
@@ -97,6 +98,7 @@ class PodSSHOperator:
             f"test -d {repo_dir}",
             f"test -d {repo_dir}/.git",
             f"cd {repo_dir} && git rev-parse --is-inside-work-tree",
+            "command -v tmux",
             f'export PATH="$HOME/.local/bin:$PATH" && cd {repo_dir} && poetry --version',
             (
                 f'export PATH="$HOME/.local/bin:$PATH" && cd {repo_dir} && '
@@ -218,7 +220,7 @@ class PodSSHOperator:
         except Exception as exc:
             raise ProvisioningError(error_prefix) from exc
         
-        
+    
     def copy_env_file(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
         if spec.env_file_local is None:
             return
@@ -269,6 +271,21 @@ class PodSSHOperator:
             )
 
             logger.info("Running poetry install in %s", spec.repo_dir)
+            self.ssh.run_command(conn, cmd)
+
+        except Exception as exc:
+            raise ProvisioningError(error_prefix) from exc
+
+    def install_tmux(self, conn: PodConnectionInfo) -> None:
+        error_prefix = f"Failed to install tmux on pod {conn.pod_id}"
+        try:
+            cmd = (
+                "set -euo pipefail; "
+                "if command -v tmux >/dev/null 2>&1; then exit 0; fi; "
+                "export DEBIAN_FRONTEND=noninteractive; "
+                "apt-get update && apt-get install -y tmux"
+            )
+            logger.info("Installing tmux")
             self.ssh.run_command(conn, cmd)
 
         except Exception as exc:
