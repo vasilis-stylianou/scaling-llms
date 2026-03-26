@@ -474,6 +474,8 @@ class ExperimentRunner:
                 ckpt_run_name=config.ckpt_run_name or "",
                 ckpt_filename=config.ckpt_filename,
                 max_steps=config.max_steps,
+                overwrite=config.overwrite,
+                ignore_if_run_exists=config.ignore_if_run_exists,
             )
 
         raise ValueError(f"Unsupported method: {config.method}")
