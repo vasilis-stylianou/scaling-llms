@@ -1,0 +1,52 @@
+work_dir: ~/Desktop/scaling-llms # fix this bug
+
+identity_file: ~/.ssh/runpod_key
+
+# Create Pod Args
+pod_spec:
+  name: wikitext-103-ablations-debug
+  image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  gpu_type_id: NVIDIA A100-SXM4-80GB
+  cloud_type: SECURE
+  container_disk_in_gb: 20
+  volume_in_gb: 40
+  ports: "22/tcp"
+  env:
+    DATABASE_URL: ${DATABASE_URL}
+
+provisioning:
+  # copy_rclone_config
+  rclone_config_local: ~/.config/rclone/rclone.conf
+  rclone_config_remote: /root/.config/rclone/rclone.conf
+  # clone_or_update_repo
+  repo_dir: /workspace/repos/scaling-llms
+  repo_url: https://github.com/vasilis-stylianou/scaling-llms.git
+  repo_branch: main
+  # copy_env_file
+  env_file_local: ~/Desktop/scaling-llms/.env 
+  env_file_remote: /workspace/repos/scaling-llms/.env
+  # --- Optional provisioning steps ---
+  # create_jupyter_kernel
+  create_jupyter_kernel: false
+  kernel_name: scaling-llms
+  kernel_display_name: "Python (scaling-llms)"
+  # poetry_install
+  poetry_install_args: []
+
+command_spec:
+  work_dir: /workspace/repos/scaling-llms
+  tmux_session_name: test_run_experiments_session
+  log_path: /workspace/tmux_logs/test_run_experiments_session.log
+  command: poetry run python scripts/run_experiments.py configs/experiments/wikitext_103_ablations/debug.yaml
+  stop_pod_at_success: true
+  stop_pod_at_failure: false
+
+workflow:
+  reuse_if_exists: false
+  timeout_s: 120
+  poll_s: 5
+  terminate_after_launch: false
+  terminate_on_failure: false
+  retry_policy:
+    max_attempts: 5
+    retry_base_s: 2.0
