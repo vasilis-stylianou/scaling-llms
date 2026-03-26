@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from runpod_orchestrator.specs import CommandSpec, ProvisioningSpec
@@ -74,6 +73,15 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         self.poetry_install(conn, spec)
         
         # self.create_jupyter_kernel(conn, spec)
+        
+    def validate_provisioning(
+        self, 
+        conn: PodConnectionInfo | None = None, 
+        spec: ProvisioningSpec | None = None
+    ) -> None:
+        conn = conn or self.conn
+        spec = spec or self.provisioning_spec
+        self._validate_provisioning(conn, spec)
         
         
     def submit_job(self, conn: PodConnectionInfo | None = None, spec: CommandSpec | None = None) -> str:

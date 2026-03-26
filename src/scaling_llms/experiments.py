@@ -386,12 +386,20 @@ class ExperimentRunner:
         ckpt_run_name: str,
         ckpt_filename: str,
         max_steps: int | None = None,
+        overwrite: bool = False,
+        ignore_if_run_exists: bool = False,
     ) -> Trainer:
         identity = RunIdentity(self.exp_name, run_name)
+        if ignore_if_run_exists and self.run_registry.run_exists(identity):
+            print(
+                f"Run {self.exp_name}/{run_name} already exists, "
+                "but ignore_if_run_exists=True, so ignoring and proceeding."
+            )
+            return None
         with self.run_registry.managed_run(
             identity,
             resume=False,
-            overwrite=False,
+            overwrite=overwrite,
         ) as new_run:
             new_run.log_metadata(
                 {
