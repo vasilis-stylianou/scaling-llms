@@ -124,6 +124,8 @@ class PodOrchestratorConfig:
                 work_dir=str(command_data.get("repo_dir", provisioning.repo_dir)),
                 tmux_session_name=str(command_data.get("tmux_session_name", "job")),
                 log_path=str(command_data.get("log_path", "/workspace/tmux_logs/job.log")),
+                stop_pod_at_success=bool(command_data.get("stop_pod_at_success", False)),
+                stop_pod_at_failure=bool(command_data.get("stop_pod_at_failure", False)),
             )
         except KeyError as exc:
             raise ConfigError(f"Missing command_spec field: {exc.args[0]}") from exc

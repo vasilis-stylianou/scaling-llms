@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import shlex
 from pathlib import Path
+from string import Template
+
 
 from runpod_orchestrator.clients import SSHClient
 from runpod_orchestrator.exceptions import CommandError, ProvisioningError
@@ -11,52 +13,236 @@ from runpod_orchestrator.specs import ProvisioningSpec, CommandSpec, PodConnecti
 
 logger = logging.getLogger(__name__)
 
+
+_TEMPLATE_PATH = Path("/Users/vasilis/Desktop/scaling-llms/scripts/tmux_job_template.sh")
+
+
+
 def _build_tmux_job_command(spec: CommandSpec) -> str:
-    """
-    Build a shell command that launches the job inside a tmux session.
-
-    Produces a single shell string that:
-    - creates the log directory
-    - kills any existing tmux session with the same name
-    - starts a detached tmux session
-    - runs the command from `work_dir` when provided
-    - appends stdout/stderr to the configured log file
-    """
-    log_path = shlex.quote(spec.log_path)
-    log_dir = shlex.quote(str(Path(spec.log_path).parent))
-    session_name = shlex.quote(spec.tmux_session_name)
-
     command = spec.command.strip()
     if not command:
         raise ValueError("spec.command must be non-empty")
 
-    work_dir_raw = spec.work_dir.strip()
-    if work_dir_raw:
-        work_dir = shlex.quote(work_dir_raw)
-        job_cmd = (
-            "set -euo pipefail; "
-            f"if [ -d {work_dir} ]; then "
-            f"cd {work_dir}; "
-            "else "
-            f'echo "Working directory does not exist: {work_dir_raw}" >&2; '
-            "exit 1; "
-            "fi; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
-            f"{command} 2>&1 | tee -a {log_path}"
+    work_dir = spec.work_dir.strip()
+    work_dir_block = (
+        ""
+        if not work_dir
+        else (
+            f"if [ -d {shlex.quote(work_dir)} ]; then\n"
+            f"  cd {shlex.quote(work_dir)}\n"
+            "else\n"
+            f'  echo "Working directory does not exist: {work_dir}" >&2\n'
+            "  exit 1\n"
+            "fi"
         )
-    else:
-        job_cmd = (
-            "set -euo pipefail; "
-            f"{command} 2>&1 | tee -a {log_path}"
-        )
+    )
 
-    job_cmd_quoted = shlex.quote(job_cmd)
+    success_block = "  stop_current_pod" if spec.stop_pod_at_success else "  true"
+    failure_block = "  stop_current_pod || true" if spec.stop_pod_at_failure else "  true"
+
+    template = Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    script = template.substitute(
+        log_path=shlex.quote(spec.log_path),
+        work_dir_block=work_dir_block,
+        command=command,
+        success_block=success_block,
+        failure_block=failure_block,
+    )
+    script_quoted = shlex.quote(script)
+
+    log_dir = shlex.quote(str(Path(spec.log_path).parent))
+    session_name = shlex.quote(spec.tmux_session_name)
 
     return (
         f"mkdir -p {log_dir} && "
         f"tmux kill-session -t {session_name} >/dev/null 2>&1 || true && "
-        f"tmux new-session -d -s {session_name} bash -lc {job_cmd_quoted}"
+        f"tmux new-session -d -s {session_name} bash -lc {script_quoted}"
     )
+
+# def _build_tmux_job_command(spec: CommandSpec) -> str:
+#     log_path = shlex.quote(spec.log_path)
+#     log_dir = shlex.quote(str(Path(spec.log_path).parent))
+#     session_name = shlex.quote(spec.tmux_session_name)
+
+#     command = spec.command.strip()
+#     if not command:
+#         raise ValueError("spec.command must be non-empty")
+
+#     work_dir_raw = spec.work_dir.strip()
+
+#     preamble_parts = ["set -euo pipefail"]
+
+#     if work_dir_raw:
+#         work_dir = shlex.quote(work_dir_raw)
+#         preamble_parts.append(
+#             f'if [ -d {work_dir} ]; then cd {work_dir}; '
+#             f'else echo "Working directory does not exist: {work_dir_raw}" >&2; exit 1; fi'
+#         )
+
+#     preamble_parts.append('export PATH="$HOME/.local/bin:$PATH"')
+#     preamble = "; ".join(preamble_parts) + "; "
+
+#     run_cmd = f"{command} 2>&1 | tee -a {log_path}"
+
+#     stop_fn = f"""
+# get_container_env_var() {{
+#   python3 - <<'PY' "$1"
+# import sys
+# key = sys.argv[1]
+# try:
+#     with open("/proc/1/environ", "rb") as f:
+#         entries = f.read().split(b"\\0")
+#     prefix = (key + "=").encode()
+#     for entry in entries:
+#         if entry.startswith(prefix):
+#             print(entry[len(prefix):].decode("utf-8", errors="replace"))
+#             break
+# except FileNotFoundError:
+#     pass
+# PY
+# }}
+
+# hydrate_runpod_env() {{
+#   if [ -z "${{RUNPOD_API_KEY:-}}" ]; then
+#     RUNPOD_API_KEY="$(get_container_env_var RUNPOD_API_KEY)"
+#     export RUNPOD_API_KEY
+#   fi
+
+#   if [ -z "${{RUNPOD_POD_ID:-}}" ]; then
+#     RUNPOD_POD_ID="$(get_container_env_var RUNPOD_POD_ID)"
+#     export RUNPOD_POD_ID
+#   fi
+# }}
+
+# stop_current_pod() {{
+#   sleep 10 
+
+#   hydrate_runpod_env
+
+#   if [ -z "${{RUNPOD_API_KEY:-}}" ]; then
+#     echo "[runpod] RUNPOD_API_KEY is not set" | tee -a {log_path}
+#     return 1
+#   fi
+
+#   if [ -z "${{RUNPOD_POD_ID:-}}" ]; then
+#     echo "[runpod] RUNPOD_POD_ID is not set" | tee -a {log_path}
+#     return 1
+#   fi
+
+#   echo "[runpod] sending stop request for pod $RUNPOD_POD_ID" | tee -a {log_path}
+
+#   response="$(
+#     cat <<EOF | curl -fsS -X POST "https://api.runpod.io/graphql?api_key=$RUNPOD_API_KEY" \\
+#       -H "Content-Type: application/json" \\
+#       -d @-
+# {{"query":"mutation {{ podStop(input: {{ podId: \\"$RUNPOD_POD_ID\\" }}) {{ id desiredStatus }} }}"}}
+# EOF
+#   )"
+
+#   echo "$response" | tee -a {log_path}
+# }}
+# """.strip()
+
+#     if not spec.stop_pod_at_success and not spec.stop_pod_at_failure:
+#         job_cmd = preamble + run_cmd
+
+#     elif spec.stop_pod_at_success and spec.stop_pod_at_failure:
+#         job_cmd = (
+#             preamble
+#             + stop_fn
+#             + "; "
+#             + f"if {run_cmd}; then "
+#             + "stop_current_pod; "
+#             + "else "
+#             + "exit_code=$?; "
+#             + "stop_current_pod || true; "
+#             + "exit $exit_code; "
+#             + "fi"
+#         )
+
+#     elif spec.stop_pod_at_success:
+#         job_cmd = (
+#             preamble
+#             + stop_fn
+#             + "; "
+#             + f"if {run_cmd}; then "
+#             + "stop_current_pod; "
+#             + "else "
+#             + "exit_code=$?; "
+#             + "exit $exit_code; "
+#             + "fi"
+#         )
+
+#     else:
+#         job_cmd = (
+#             preamble
+#             + stop_fn
+#             + "; "
+#             + f"if {run_cmd}; then "
+#             + "true; "
+#             + "else "
+#             + "exit_code=$?; "
+#             + "stop_current_pod || true; "
+#             + "exit $exit_code; "
+#             + "fi"
+#         )
+
+#     job_cmd_quoted = shlex.quote(job_cmd)
+
+#     return (
+#         f"mkdir -p {log_dir} && "
+#         f"tmux kill-session -t {session_name} >/dev/null 2>&1 || true && "
+#         f"tmux new-session -d -s {session_name} bash -lc {job_cmd_quoted}"
+#     )
+
+
+
+# def _build_tmux_job_command(spec: CommandSpec) -> str:
+#     """
+#     Build a shell command that launches the job inside a tmux session.
+
+#     Produces a single shell string that:
+#     - creates the log directory
+#     - kills any existing tmux session with the same name
+#     - starts a detached tmux session
+#     - runs the command from `work_dir` when provided
+#     - appends stdout/stderr to the configured log file
+#     """
+#     log_path = shlex.quote(spec.log_path)
+#     log_dir = shlex.quote(str(Path(spec.log_path).parent))
+#     session_name = shlex.quote(spec.tmux_session_name)
+
+#     command = spec.command.strip()
+#     if not command:
+#         raise ValueError("spec.command must be non-empty")
+
+#     work_dir_raw = spec.work_dir.strip()
+#     if work_dir_raw:
+#         work_dir = shlex.quote(work_dir_raw)
+#         job_cmd = (
+#             "set -euo pipefail; "
+#             f"if [ -d {work_dir} ]; then "
+#             f"cd {work_dir}; "
+#             "else "
+#             f'echo "Working directory does not exist: {work_dir_raw}" >&2; '
+#             "exit 1; "
+#             "fi; "
+#             'export PATH="$HOME/.local/bin:$PATH"; '
+#             f"{command} 2>&1 | tee -a {log_path}"
+#         )
+#     else:
+#         job_cmd = (
+#             "set -euo pipefail; "
+#             f"{command} 2>&1 | tee -a {log_path}"
+#         )
+
+#     job_cmd_quoted = shlex.quote(job_cmd)
+
+#     return (
+#         f"mkdir -p {log_dir} && "
+#         f"tmux kill-session -t {session_name} >/dev/null 2>&1 || true && "
+#         f"tmux new-session -d -s {session_name} bash -lc {job_cmd_quoted}"
+#     )
 
 
 
@@ -330,7 +516,9 @@ class PodSSHOperator:
 
             logger.info("Launching job with command: %s", spec.command)
             self.ssh.run_command(conn, remote_cmd)
-            return spec.log_path
+
+            # Return the command to stream logs from the job
+            return self.ssh.make_shell_command(conn, f"tail -f {spec.log_path}")
         except Exception as exc:
             raise CommandError(error_prefix) from exc
         

@@ -37,10 +37,9 @@ command_spec:
   work_dir: /workspace/repos/scaling-llms
   tmux_session_name: test_run_experiments_session
   log_path: /workspace/tmux_logs/test_run_experiments_session.log
-  command: >
-    cd /workspace/repos/scaling-llms 
-    && poetry run python scripts/run_experiments.py
-    /configs/experiments/tests/rclone_sync_test.yaml
+  command: poetry run python scripts/run_experiments.py configs/experiments/tests/rclone_sync_test.yaml
+  stop_pod_at_success: true
+  stop_pod_at_failure: false
 
 workflow:
   reuse_if_exists: false

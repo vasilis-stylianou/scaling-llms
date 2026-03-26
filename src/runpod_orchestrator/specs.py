@@ -91,6 +91,8 @@ class CommandSpec:
     tmux_session_name: str
     log_path: str
     command: str
+    stop_pod_at_success: bool = False,
+    stop_pod_at_failure: bool = False,
 
 
 @dataclass(frozen=True)

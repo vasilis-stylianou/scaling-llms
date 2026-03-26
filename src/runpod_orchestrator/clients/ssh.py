@@ -63,6 +63,13 @@ class SSHClient:
 
     # -- public API --
 
+    def make_shell_command(self, conn: PodConnectionInfo, command: str) -> str:
+        """
+        Construct the full SSH command string to execute a remote shell command.
+        """
+        base_ssh_cmd = " ".join(self._base_ssh_args(conn))
+        return f"{base_ssh_cmd} {shlex.quote(command)}"
+
     def run_command(
         self,
         conn: PodConnectionInfo,
