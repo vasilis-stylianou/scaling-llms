@@ -1,4 +1,4 @@
-experiment_config_module: scaling_llms.experiment_configs.test_run
+experiment_config_module: scaling_llms.experiment_configs.tests.rclone_sync_runs
 
 registries:
   database_url_env_name: DATABASE_URL

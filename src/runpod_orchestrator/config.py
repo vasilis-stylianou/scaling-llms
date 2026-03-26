@@ -109,6 +109,11 @@ class PodOrchestratorConfig:
                     if provisioning_data.get("env_file_local") is not None
                     else None
                 ),
+                env_file_remote=(
+                    str(provisioning_data["env_file_remote"])
+                    if provisioning_data.get("env_file_remote") is not None
+                    else None
+                ),
             )
         except KeyError as exc:
             raise ConfigError(f"Missing provisioning field: {exc.args[0]}") from exc
