@@ -504,6 +504,32 @@ class PodSSHOperator:
                 f"Failed to create Jupyter kernel on pod {conn.pod_id}"
             ) from exc
         
+    def upload_files(self, conn: PodConnectionInfo, spec: CommandSpec) -> None:
+        """Upload local files to the remote pod before launching the job."""
+        if not spec.upload_files:
+            return
+
+        error_prefix = f"Failed to upload files to pod {conn.pod_id}"
+        try:
+            for local_path, remote_path in spec.upload_files:
+                local = Path(local_path).expanduser().resolve()
+                if not local.exists():
+                    raise FileNotFoundError(f"Upload file not found: {local}")
+
+                remote_parent = str(Path(remote_path).parent)
+                self.ssh.run_command(
+                    conn,
+                    f"mkdir -p {shlex.quote(remote_parent)}",
+                )
+                logger.info("Uploading %s -> %s", local, remote_path)
+                self.ssh.scp_to_pod(
+                    conn,
+                    local_path=local,
+                    remote_path=remote_path,
+                )
+        except Exception as exc:
+            raise CommandError(error_prefix) from exc
+
     def launch_tmux_job(self, conn: PodConnectionInfo, spec: CommandSpec) -> str:
         """Launch the job command on the pod inside a tmux session.
 
@@ -512,6 +538,7 @@ class PodSSHOperator:
         """
         error_prefix = f"Failed to launch job on pod {conn.pod_id}"
         try:
+            self.upload_files(conn, spec)
             remote_cmd = _build_tmux_job_command(spec)
 
             logger.info("Launching job with command: %s", spec.command)

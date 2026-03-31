@@ -59,6 +59,7 @@ class TrainerConfig(BaseJsonConfig):
     sys_log_freq: int = 100
     eval_log_freq: int = 500
     ckpt_log_freq: int = -1
+    keep_last_n: int | None = 3
     best_eval_nll_tol: float = 1e-4
 
     # Timer
@@ -593,6 +594,7 @@ class Trainer:
             self.optimizer,
             self.scaler,
             self.lr_scheduler,
+            keep_last_n=self.cfg.keep_last_n,
         )
     
     def _init_train_iter(self, train_dl, iter_mode):

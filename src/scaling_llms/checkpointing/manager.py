@@ -2,6 +2,7 @@
 CheckpointManager: Centralized checkpoint save/load logic.
 """
 import logging
+import re
 from pathlib import Path
 from typing import Any
 import torch
@@ -37,6 +38,8 @@ class CheckpointManager:
     - Checkpoint naming conventions (latest, best, step_<N>)
     """
     
+    _STEP_CKPT_PATTERN = re.compile(r"^step_(\d+)\.pt$")
+
     def __init__(
         self,
         checkpoint_dir: Path | str,
@@ -44,7 +47,8 @@ class CheckpointManager:
         optimizer: torch.optim.Optimizer | None = None,
         scaler: Any = None,  # GradScaler
         lr_scheduler: Any = None,  # LambdaLR | None
-        device: str | torch.device | None = None
+        device: str | torch.device | None = None,
+        keep_last_n: int | None = None,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +60,7 @@ class CheckpointManager:
         self.lr_scheduler = lr_scheduler
 
         self.device = torch.device(device) if device is not None else None
+        self.keep_last_n = keep_last_n
 
         # Init Logger
         self.logger = BaseLogger(name="CheckpointManager", level=logging.INFO)
@@ -89,7 +94,24 @@ class CheckpointManager:
         
         torch.save(ckpt, ckpt_path)
 
+        if self.keep_last_n is not None and self._STEP_CKPT_PATTERN.match(name):
+            self._cleanup_old_step_checkpoints()
+
         return ckpt_path
+
+    def _cleanup_old_step_checkpoints(self) -> None:
+        """Delete oldest step_*.pt checkpoints, keeping only the last N."""
+        step_ckpts: list[tuple[int, Path]] = []
+        for p in self.checkpoint_dir.iterdir():
+            m = self._STEP_CKPT_PATTERN.match(p.name)
+            if m:
+                step_ckpts.append((int(m.group(1)), p))
+
+        step_ckpts.sort(key=lambda x: x[0])
+        to_delete = step_ckpts[: max(0, len(step_ckpts) - self.keep_last_n)]
+        for step_num, path in to_delete:
+            self.logger.info(f"[cleanup] Removing old checkpoint: {path.name}")
+            path.unlink()
 
     def load(
         self,

@@ -4,6 +4,8 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+import shutil
+
 import yaml
 from dotenv import load_dotenv
 
@@ -46,6 +48,7 @@ class LoadedConfig:
     experiment: ExperimentConfig
     run_registry: MakeRunRegistryConfig
     dataset_registry: MakeDatasetRegistryConfig
+    cleanup_after_sync: bool = False
 
 
 def _load_config(config_path: Path) -> LoadedConfig:
@@ -97,6 +100,7 @@ def _load_config(config_path: Path) -> LoadedConfig:
             data=registries["datasets"],
             env_var_name=database_url_env_name,
         ),
+        cleanup_after_sync=bool(data.get("cleanup_after_sync", False)),
     )
 
 
@@ -107,6 +111,7 @@ def run_experiments(
     exp_cfg: ExperimentConfig,
     run_registry_cfg: MakeRunRegistryConfig,
     dataset_registry_cfg: MakeDatasetRegistryConfig,
+    cleanup_after_sync: bool = False,
 ) -> None:
     setup_console_logging()
 
@@ -120,8 +125,13 @@ def run_experiments(
 
     for run_cfg in exp_cfg.runs:
         print(f"[run] starting: {exp_cfg.experiment_name}/{run_cfg.run_name}")
-        _ = exp_runner.run(config=run_cfg)
+        trainer = exp_runner.run(config=run_cfg)
         print(f"[run] finished and synced: {exp_cfg.experiment_name}/{run_cfg.run_name}")
+
+        if cleanup_after_sync and trainer is not None:
+            artifacts_root = trainer.run.artifacts_dir.root
+            print(f"[cleanup] deleting local artifacts: {artifacts_root}")
+            shutil.rmtree(artifacts_root, ignore_errors=True)
         
 
 # -------------------------------
@@ -138,6 +148,7 @@ def main() -> None:
         exp_cfg=cfg.experiment,
         run_registry_cfg=cfg.run_registry,
         dataset_registry_cfg=cfg.dataset_registry,
+        cleanup_after_sync=cfg.cleanup_after_sync,
     )
 
 

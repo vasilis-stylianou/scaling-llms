@@ -71,7 +71,7 @@ RUNS = [
     { 
         "method": "start",
         "run_name": run_name,
-        "overwrite": False,
+        "overwrite": True,
         "dataset_kwargs": DATASET_KWARGS,
         "dataloader_kwargs": DATALOADER_KWARGS,
         "trainer_kwargs": _1D_SCREENING_TRAINER_KWARGS,

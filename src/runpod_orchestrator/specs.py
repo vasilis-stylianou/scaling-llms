@@ -91,8 +91,9 @@ class CommandSpec:
     tmux_session_name: str
     log_path: str
     command: str
-    stop_pod_at_success: bool = False,
-    stop_pod_at_failure: bool = False,
+    stop_pod_at_success: bool = False
+    stop_pod_at_failure: bool = False
+    upload_files: tuple[tuple[str, str], ...] = ()  # [(local_path, remote_path)]
 
 
 @dataclass(frozen=True)

@@ -41,7 +41,6 @@ class PodOrchestratorConfig:
     command_spec: CommandSpec
     identity_file: str
     runpod_api_key: str | None = None
-    work_dir: str | None = None
     workflow: WorkflowOptions = field(default_factory=WorkflowOptions)
 
     @classmethod
@@ -119,6 +118,12 @@ class PodOrchestratorConfig:
             raise ConfigError(f"Missing provisioning field: {exc.args[0]}") from exc
 
         try:
+            raw_uploads = command_data.get("upload_files") or []
+            upload_files = tuple(
+                (str(entry["local"]), str(entry["remote"]))
+                for entry in raw_uploads
+            )
+
             command_spec = CommandSpec(
                 command=str(command_data["command"]),
                 work_dir=str(command_data.get("repo_dir", provisioning.repo_dir)),
@@ -126,6 +131,7 @@ class PodOrchestratorConfig:
                 log_path=str(command_data.get("log_path", "/workspace/tmux_logs/job.log")),
                 stop_pod_at_success=bool(command_data.get("stop_pod_at_success", False)),
                 stop_pod_at_failure=bool(command_data.get("stop_pod_at_failure", False)),
+                upload_files=upload_files,
             )
         except KeyError as exc:
             raise ConfigError(f"Missing command_spec field: {exc.args[0]}") from exc
@@ -153,6 +159,4 @@ class PodOrchestratorConfig:
             workflow=workflow,
             identity_file=identity_file,
             runpod_api_key=runpod_api_key,
-            work_dir=data.get("work_dir"),  # TODO
-
         )

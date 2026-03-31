@@ -1,16 +1,14 @@
-work_dir: ~/Desktop/scaling-llms # fix this bug
-
 identity_file: ~/.ssh/runpod_key
 
 # Create Pod Args
 pod_spec:
-  name: wikitext-103-ablations-debug
+  name: wikitext-103-ablations-1d-screening
   image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   gpu_type_id: NVIDIA A100-SXM4-80GB
   cpu_type_id: # cpu5g-4-16
   cloud_type: SECURE
-  container_disk_in_gb: 20
-  volume_in_gb: 40
+  container_disk_in_gb: 40
+  volume_in_gb: 80
   ports: "22/tcp"
   env:
     DATABASE_URL: ${DATABASE_URL}
@@ -36,9 +34,12 @@ provisioning:
 
 command_spec:
   work_dir: /workspace/repos/scaling-llms
-  tmux_session_name: test_run_experiments_session
-  log_path: /workspace/tmux_logs/test_run_experiments_session.log
-  command: poetry run python scripts/run_experiments.py configs/run_experiments.yaml
+  tmux_session_name: wikitext_103_ablations_1d_screening_session
+  log_path: /workspace/tmux_logs/wikitext_103_ablations_1d_screening_session.log
+  command: poetry run python scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml
+  upload_files:
+    - local: /Users/vasilis/Desktop/scaling-llms/configs/run_experiments.yaml
+      remote: /workspace/runtime_configs/run_experiments.yaml
   stop_pod_at_success: true
   stop_pod_at_failure: false
 
