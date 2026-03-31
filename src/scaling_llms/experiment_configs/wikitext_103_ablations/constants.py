@@ -15,8 +15,8 @@ DATASET_KWARGS = dict(
 
 DATALOADER_KWARGS = dict(
     seq_len=1024,
-    train_batch_size=16,
-    eval_batch_size=16,
+    train_batch_size=32,
+    eval_batch_size=32,
     start_sample_idx=0,
     seed=1234
 )

@@ -161,7 +161,7 @@ class PodManager:
         """
         with_retries(runpod.stop_pod, pod_id, retry_policy=retry_policy)
 
-    def resume_pod(self, pod_id: str, gpu_count: int = 1) -> None:
+    def resume_pod(self, pod_id: str, gpu_count: int = 0) -> None:
         try:
             runpod.resume_pod(pod_id=pod_id, gpu_count=gpu_count)
         except Exception as exc:
