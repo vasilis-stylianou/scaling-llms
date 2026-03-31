@@ -1,4 +1,4 @@
-from scaling_llms.experiment_configs.wikitext_103_ablation.constants import (
+from scaling_llms.experiment_configs.wikitext_103_ablations.constants import (
     CONSTANT_GPT_HPARAMS,
     CONSTANT_OPTIMIZATION_KWARGS,
     DATASET_KWARGS,
@@ -12,7 +12,7 @@ from scaling_llms.experiment_configs.wikitext_103_ablation.constants import (
 _DEBUG_TRAINER_KWARGS = dict(
     num_steps=50,
     weight_decay=0.0,
-    accum_steps=1,
+    accum_steps=1, 
     grad_clip_norm=None,
     iter_mode="single-batch",
     lr_schedule="none",
