@@ -70,6 +70,7 @@ class CheckpointManager:
         self,
         trainer_state: dict[str, Any],
         name: str = "latest.pt",
+        log_step_idx: int | None = None,
     ) -> Path:
         """
         Save checkpoint with model, optimizer, and trainer state.
@@ -82,7 +83,8 @@ class CheckpointManager:
             Path to the saved checkpoint
         """    
         ckpt_path = self.checkpoint_dir / name
-        self.logger.info(f"[save] Saving checkpoint at step {trainer_state['step_idx']} to {ckpt_path}")
+        log_step_idx = log_step_idx or trainer_state.get("step_idx") # logging step_idx might be diff from trainer_state step_idx
+        self.logger.info(f"[save] Saving checkpoint at step {log_step_idx} to {ckpt_path}")
 
         ckpt = {
             CHECKPOINT_KEYS.model: self.model.state_dict(),

@@ -59,9 +59,9 @@ _SWIGLU_HPARAMS = dict(
 )
 
 _1D_RUNS = [
-    ("baseline", _BASELINE_HPARAMS),
-    ("rms_norm", _RMS_NORM_HPARAMS),
-    ("rotary", _ROTARY_HPARAMS),
+    # ("baseline", _BASELINE_HPARAMS),
+    # ("rms_norm", _RMS_NORM_HPARAMS),
+    # ("rotary", _ROTARY_HPARAMS),
     ("swiglu", _SWIGLU_HPARAMS)
 ]
 
