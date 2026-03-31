@@ -1,4 +1,4 @@
-experiment_config_module: scaling_llms.experiment_configs.wikitext_103_ablations.debug
+experiment_config_module: scaling_llms.experiment_configs.wikitext_103_ablations.one_dim_screening
 
 registries:
   database_url_env_name: DATABASE_URL
