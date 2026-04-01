@@ -9,7 +9,7 @@ from scaling_llms.experiment_configs.wikitext_103_ablations.constants import (
 # -------------------------
 # TRAINER CONFIGS
 # -------------------------
-_1D_SCREENING_TRAINER_KWARGS = dict(
+_2D_SCREENING_TRAINER_KWARGS = dict(
     num_steps=455,
     weight_decay=0.1,
     accum_steps=8,
@@ -30,43 +30,35 @@ _1D_SCREENING_TRAINER_KWARGS = dict(
 # -------------------------
 # MODEL CONFIGS
 # -------------------------
-_BASELINE_HPARAMS = dict(
+_ROTARY_RMS_GELU_HPARAMS = dict(
     mlp_type="standard_gelu",
-    pos_encoding_type="absolute",
-    norm_type="layernorm",
-    **CONSTANT_GPT_HPARAMS
-)
-
-_RMS_NORM_HPARAMS = dict(
-    mlp_type="standard_gelu",
-    pos_encoding_type="absolute",
+    pos_encoding_type="rotary",
     norm_type="rmsnorm",
     **CONSTANT_GPT_HPARAMS
 )
 
-_ROTARY_HPARAMS = dict(
-    mlp_type="standard_gelu",
+_ROTARY_RMS_SWIGLU_HPARAMS = dict(
+    mlp_type="swiglu",
+    pos_encoding_type="rotary",
+    norm_type="rmsnorm",
+    **CONSTANT_GPT_HPARAMS
+)
+
+_ROTARY_LN_SWIGLU_HPARAMS = dict(
+    mlp_type="swiglu",
     pos_encoding_type="rotary",
     norm_type="layernorm",
     **CONSTANT_GPT_HPARAMS
 )
 
-_SWIGLU_HPARAMS = dict(
-    mlp_type="swiglu",
-    pos_encoding_type="absolute",
-    norm_type="layernorm",
-    **CONSTANT_GPT_HPARAMS
-)
-
-_1D_RUNS = [
-    ("baseline", _BASELINE_HPARAMS),
-    ("rms_norm", _RMS_NORM_HPARAMS),
-    ("rotary", _ROTARY_HPARAMS),
-    ("swiglu", _SWIGLU_HPARAMS)
+_2D_RUNS = [
+    ("rotary_rms_gelu", _ROTARY_RMS_GELU_HPARAMS),
+    ("rotary_rms_swiglu", _ROTARY_RMS_SWIGLU_HPARAMS),
+    ("rotary_ln_swiglu", _ROTARY_LN_SWIGLU_HPARAMS),
 ]
 
 
-EXPERIMENT_NAME = f"{EXPERIMENT_NAME_PREFIX}_1d_screening"
+EXPERIMENT_NAME = f"{EXPERIMENT_NAME_PREFIX}_2d_screening"
 RUNS = [
     { 
         "method": "start",
@@ -74,8 +66,8 @@ RUNS = [
         "overwrite": True,
         "dataset_kwargs": DATASET_KWARGS,
         "dataloader_kwargs": DATALOADER_KWARGS,
-        "trainer_kwargs": _1D_SCREENING_TRAINER_KWARGS,
+        "trainer_kwargs": _2D_SCREENING_TRAINER_KWARGS,
         "gpt_hparams": hparams
     }
-    for run_name, hparams in _1D_RUNS
+    for run_name, hparams in _2D_RUNS
 ]

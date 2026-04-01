@@ -1,9 +1,9 @@
 import math
 import json
 import pandas as pd
+from scaling_llms.registries.runs.artifacts import RunArtifactsDir
 from scaling_llms.registries.runs.metadata import RunIdentity
 from scaling_llms.registries.runs.registry import RunRegistry
-from scaling_llms.storage.google_drive import make_gdrive_run_registry
 from scaling_llms.constants import (
     METRIC_CATS,
     METADATA_FILES,
@@ -61,9 +61,9 @@ def validate_init_nll(
 
 
 class StepMetricsReader:
-    def __init__(self, experiment_name: str, is_dev: bool = True):
+    def __init__(self, run_reg, experiment_name: str, is_dev: bool = True):
         self.experiment_name = experiment_name
-        self.run_reg = make_gdrive_run_registry(project_subdir=PROJECT_DEV_NAME if is_dev else PROJECT_NAME)
+        self._run_reg = run_reg
         self.run_name2jsonl_reader = self._get_run_name2jsonl_reader()
 
     # --- API ---
@@ -173,11 +173,12 @@ class StepMetricsReader:
 
     # --- Internal methods ---
     def _get_run_name2jsonl_reader(self):
-        df_runs = self.run_reg.get_runs_as_df(experiment_name=self.experiment_name)
+        df_runs = self._run_reg.get_runs_as_df(experiment_name=self.experiment_name)
+        artifacts_root = self._run_reg.artifacts.root
         run_name2jsonl_reader = dict()
         for row in df_runs.itertuples(index=False):
-            run = self.run_reg.get_run(RunIdentity(self.experiment_name, row.run_name))
-            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(run.metrics_dir)
+            run_artifacts_dir = RunArtifactsDir(artifacts_root / row.artifacts_path)
+            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(run_artifacts_dir.metrics)
         return run_name2jsonl_reader
     
     

@@ -6,7 +6,6 @@ from typing import Any
 from scaling_llms.registries.core.metadata_backend import MetadataBackend
 from scaling_llms.registries.core.metadata import EntityIdentity, MetadataDB
 from scaling_llms.registries.runs.schema import (
-    DEFAULT_RUNS_TABLE_NAME,
     RUN_IDENTITY_COLS,
     make_runs_table_spec,
 )
