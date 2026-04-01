@@ -34,8 +34,8 @@ provisioning:
 
 command_spec:
   work_dir: /workspace/repos/scaling-llms
-  tmux_session_name: wikitext_103_ablations_1d_screening_session
-  log_path: /workspace/tmux_logs/wikitext_103_ablations_1d_screening_session.log
+  tmux_session_name: wikitext_103_ablations_2d_screening_session
+  log_path: /workspace/tmux_logs/wikitext_103_ablations_2d_screening_session.log
   command: poetry run python scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml
   upload_files:
     - local: /Users/vasilis/Desktop/scaling-llms/configs/run_experiments.yaml
@@ -48,7 +48,7 @@ workflow:
   timeout_s: 120
   poll_s: 5
   terminate_after_launch: false
-  terminate_on_failure: false
+  terminate_on_failure: true
   retry_policy:
     max_attempts: 5
     retry_base_s: 2.0

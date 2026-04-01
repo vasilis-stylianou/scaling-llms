@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from scaling_llms.utils.loggers import setup_console_logging
 from runpod_orchestrator.specs import CommandSpec, ProvisioningSpec
 from runpod_orchestrator.clients.ssh import SSHClient
 from runpod_orchestrator.config import PodOrchestratorConfig
@@ -10,6 +11,8 @@ from runpod_orchestrator.services import (
     PodManager,
     PodSSHOperator,
 )
+
+setup_console_logging()
 
 class PodOrchestrator(PodSSHOperator, PodManager):
     """

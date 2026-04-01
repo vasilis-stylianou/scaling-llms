@@ -11,7 +11,7 @@ from runpod_orchestrator.exceptions import CommandError, ProvisioningError
 from runpod_orchestrator.specs import ProvisioningSpec, CommandSpec, PodConnectionInfo
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("PodSSH")
 
 
 _TEMPLATE_PATH = Path("/Users/vasilis/Desktop/scaling-llms/scripts/tmux_job_template.sh")
@@ -339,7 +339,7 @@ class PodSSHOperator:
                 conn,
                 f"mkdir -p {shlex.quote(remote_parent)}",
             )
-            logger.info("Copying rclone config to %s", spec.rclone_config_remote)
+            logger.info("[rclone] Copying config to %s", spec.rclone_config_remote)
             self.ssh.scp_to_pod(
                 conn,
                 local_path=local_rclone,
@@ -400,7 +400,7 @@ class PodSSHOperator:
                     f"else git clone {repo_url} {repo_dir}; fi"
                 )
 
-            logger.info("Syncing repository at %s", spec.repo_dir)
+            logger.info("[repo] Syncing repository at %s", spec.repo_dir)
             self.ssh.run_command(conn, base_cmd)
 
         except Exception as exc:
@@ -419,7 +419,7 @@ class PodSSHOperator:
                 remote_path=spec.env_file_remote,
             )
 
-            logger.info("Copying env file to %s", spec.env_file_remote)
+            logger.info("[env] Copying env file to %s", spec.env_file_remote)
             self.ssh.run_command(
                 conn,
                 f"chmod 600 {spec.env_file_remote}"
@@ -456,7 +456,7 @@ class PodSSHOperator:
                 f"{poetry_install_cmd}"
             )
 
-            logger.info("Running poetry install in %s", spec.repo_dir)
+            logger.info("[poetry] Running poetry install in %s", spec.repo_dir)
             self.ssh.run_command(conn, cmd)
 
         except Exception as exc:
@@ -471,7 +471,7 @@ class PodSSHOperator:
                 "export DEBIAN_FRONTEND=noninteractive; "
                 "apt-get update && apt-get install -y tmux"
             )
-            logger.info("Installing tmux")
+            logger.info("[tmux] Installing tmux")
             self.ssh.run_command(conn, cmd)
 
         except Exception as exc:
@@ -497,7 +497,7 @@ class PodSSHOperator:
                 "poetry run python -m ipykernel install --user "
                 f"--name {kernel_name} --display-name {kernel_display_name}"
             )
-            logger.info("Creating Jupyter kernel %s", spec.kernel_name)
+            logger.info("[jupyter] Creating kernel %s", spec.kernel_name)
             self.ssh.run_command(conn, cmd)
         except Exception as exc:
             raise ProvisioningError(
@@ -521,7 +521,7 @@ class PodSSHOperator:
                     conn,
                     f"mkdir -p {shlex.quote(remote_parent)}",
                 )
-                logger.info("Uploading %s -> %s", local, remote_path)
+                logger.info("[upload] %s -> %s", local, remote_path)
                 self.ssh.scp_to_pod(
                     conn,
                     local_path=local,
@@ -541,7 +541,7 @@ class PodSSHOperator:
             self.upload_files(conn, spec)
             remote_cmd = _build_tmux_job_command(spec)
 
-            logger.info("Launching job with command: %s", spec.command)
+            logger.info("[job] Launching command: %s", spec.command)
             self.ssh.run_command(conn, remote_cmd)
 
             # Return the command to stream logs from the job

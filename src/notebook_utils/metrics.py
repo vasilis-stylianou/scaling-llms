@@ -61,9 +61,9 @@ def validate_init_nll(
 
 
 class StepMetricsReader:
-    def __init__(self, run_reg, experiment_name: str, is_dev: bool = True):
+    def __init__(self, run_registry: RunRegistry, experiment_name: str):
+        self._run_reg = run_registry
         self.experiment_name = experiment_name
-        self._run_reg = run_reg
         self.run_name2jsonl_reader = self._get_run_name2jsonl_reader()
 
     # --- API ---

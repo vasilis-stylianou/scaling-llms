@@ -13,7 +13,7 @@ from runpod_orchestrator.specs import PodConnectionInfo, PodSpec, RetryPolicy
 
 
 T = TypeVar("T")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("PodMgr")
 
 
 
@@ -39,7 +39,7 @@ def with_retries(
                 break
             sleep_s = retry_policy.retry_base_s * (2 ** (attempt - 1))
             logger.warning(
-                "Retrying %s after failure (%s/%s): %s",
+                "[retry] %s failed (%s/%s): %s",
                 fn.__name__,
                 attempt,
                 retry_policy.max_attempts,
@@ -191,7 +191,7 @@ class PodManager:
                     msg = api_error.lower()
                     if "not found" in msg or "does not exist" in msg:
                         logger.info(
-                            "Terminate API says pod %s is already absent: %s",
+                            "[terminate] API says pod %s is already absent: %s",
                             pod_id,
                             api_error,
                         )
@@ -199,7 +199,7 @@ class PodManager:
                     raise RuntimeError(api_error)
 
                 logger.info(
-                    "Terminate request accepted for pod %s: %r",
+                    "[terminate] Request accepted for pod %s: %r",
                     pod_id,
                     response,
                 )
@@ -211,7 +211,7 @@ class PodManager:
 
                 if "not found" in message or "does not exist" in message:
                     logger.info(
-                        "Terminate call says pod %s is already absent: %s",
+                        "[terminate] Call says pod %s is already absent: %s",
                         pod_id,
                         exc,
                     )
@@ -222,7 +222,7 @@ class PodManager:
 
                 sleep_s = retry_policy.retry_base_s * (2 ** (attempt - 1))
                 logger.warning(
-                    "Terminate retry for pod %s (%s/%s): %s",
+                    "[terminate] Retry for pod %s (%s/%s): %s",
                     pod_id,
                     attempt,
                     retry_policy.max_attempts,
@@ -243,12 +243,12 @@ class PodManager:
             try:
                 pod = self._get_pod_by_id(pod_id, retry_policy=no_retry)
                 if self._is_terminal_pod_state(pod):
-                    logger.info("Pod %s reached terminal state", pod_id)
+                    logger.info("[terminate] Pod %s reached terminal state", pod_id)
                     return
 
                 if self._pod_missing_from_list(pod_id, retry_policy=no_retry):
                     logger.info(
-                        "Pod %s no longer appears in pod list", pod_id
+                        "[terminate] Pod %s no longer appears in pod list", pod_id
                     )
                     return
 
@@ -256,7 +256,7 @@ class PodManager:
                 message = str(exc).lower()
                 if "not found" in message or "does not exist" in message:
                     logger.info(
-                        "Pod %s no longer retrievable after terminate", pod_id
+                        "[terminate] Pod %s no longer retrievable", pod_id
                     )
                     return
                 last_exc = exc

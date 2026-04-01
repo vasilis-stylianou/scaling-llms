@@ -7,7 +7,7 @@ from pathlib import Path
 
 from runpod_orchestrator.specs import PodConnectionInfo
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("SSH")
 
 
 class SSHClient:
@@ -143,5 +143,5 @@ class SSHClient:
             self.run_command(conn, "true", timeout_s=timeout_s)
             return True
         except Exception as exc:
-            logger.debug("SSH probe failed for pod %s: %s", conn.pod_id, exc)
+            logger.debug("[probe] SSH probe failed for pod %s: %s", conn.pod_id, exc)
             return False

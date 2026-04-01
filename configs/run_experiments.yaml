@@ -1,4 +1,4 @@
-experiment_config_module: scaling_llms.experiment_configs.wikitext_103_ablations.one_dim_screening
+experiment_config_module: scaling_llms.experiment_configs.wikitext_103_ablations.two_dim_screening
 cleanup_after_sync: true   # delete local artifacts after each run syncs
 
 registries:
