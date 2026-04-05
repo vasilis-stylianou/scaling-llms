@@ -58,10 +58,11 @@ class DatasetArtifacts(Artifacts):
             relative_artifacts_path = self.get_relative_path(artifacts_dir.root)
             self.sync_hooks.pull_remote_to_local(relative_artifacts_path)
 
-    def get_dir(self, relative_path: str | Path) -> DatasetArtifactsDir:
+    def get_dir(self, relative_path: str | Path, pull: bool = True) -> DatasetArtifactsDir:
 
         artifacts_dir = DatasetArtifactsDir(self.get_absolute_path(relative_path))
-        self.pull_dir(artifacts_dir)
+        if pull:
+            self.pull_dir(artifacts_dir)
 
         if not artifacts_dir.exists():
             raise FileNotFoundError(f"Dataset artifacts directory does not exist: {artifacts_dir}")
