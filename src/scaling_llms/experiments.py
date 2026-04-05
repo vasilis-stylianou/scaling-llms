@@ -534,11 +534,9 @@ class ExperimentRunner:
                     gpt_hparams=gpt_hparams,
                     run=run,
                 )
-                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
             # Distributed worker processes skip run creation and directly init trainer and train.
-            barrier_if_distributed()
             trainer = init_trainer(
                 dataset_registry=self.dataset_registry,
                 dataset_id=dataset_id,
@@ -573,11 +571,8 @@ class ExperimentRunner:
                     reset_state=False,
                     active_run=run,
                 )
-
-                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
-            barrier_if_distributed()
             run = self.run_registry.get_run(identity)
             trainer = build_trainer_from_checkpoint(
                     ckpt_run=run,
@@ -654,10 +649,8 @@ class ExperimentRunner:
                     dataloader_kwargs=dataloader_kwargs,
                     active_run=run,
                 )
-                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
-            barrier_if_distributed()
             trainer = build_trainer_from_checkpoint_transfer(
                 ckpt_run=ckpt_run,
                 ckpt_filename=ckpt_filename,
