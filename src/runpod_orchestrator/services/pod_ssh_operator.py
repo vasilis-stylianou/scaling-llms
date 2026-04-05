@@ -10,6 +10,7 @@ from runpod_orchestrator.clients import SSHClient
 from runpod_orchestrator.exceptions import CommandError, ProvisioningError
 from runpod_orchestrator.specs import ProvisioningSpec, CommandSpec, PodConnectionInfo
 
+import re as _re
 
 logger = logging.getLogger("PodSSH")
 
@@ -22,6 +23,15 @@ def _build_tmux_job_command(spec: CommandSpec) -> str:
     command = spec.command.strip()
     if not command:
         raise ValueError("spec.command must be non-empty")
+
+    # Multi-GPU: rewrite `python <script>` → `torchrun --standalone --nproc_per_node=N <script>`
+    if spec.gpu_count > 1:
+        command = _re.sub(
+            r'\bpython3?\s+',
+            f'torchrun --standalone --nproc_per_node={spec.gpu_count} ',
+            command,
+            count=1,
+        )
 
     work_dir = spec.work_dir.strip()
     work_dir_block = (

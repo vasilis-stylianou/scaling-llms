@@ -1,5 +1,4 @@
-
-
+import os
 import logging
 import math
 from contextlib import nullcontext
@@ -10,6 +9,24 @@ from scaling_llms.constants import METADATA_FILES
 from scaling_llms.tracking import Run
 from scaling_llms.utils.loggers import TrainerLogger
 from scaling_llms.utils.timer import DeviceTimer
+
+
+# -----------------------------
+# DETERMINISM
+# -----------------------------
+def set_determinism(seed: int) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+    # Strict determinism (can throw if you use nondeterministic ops)
+    # Comment out if it blocks you during early bring-up.
+    torch.use_deterministic_algorithms(True)
 
 
 # -----------------------------

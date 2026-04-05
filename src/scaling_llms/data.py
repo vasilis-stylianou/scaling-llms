@@ -12,7 +12,7 @@ import numpy as np
 import tiktoken
 import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from scaling_llms.constants import (
     DATASET_FILES,
@@ -20,11 +20,19 @@ from scaling_llms.constants import (
     METADATA_FILES,
     TOKENIZED_CACHE_DIR_NAME,
 )
+from scaling_llms.distributed import (
+    get_global_rank,
+    get_local_rank,
+    get_world_size,
+    is_main_process,
+    barrier_if_distributed,
+    is_distributed,
+)
 from scaling_llms.registries import (
     DatasetArtifactsDir,
     DatasetIdentity,
     DatasetRegistry,
-    TokenizedDatasetInfo
+    TokenizedDatasetInfo,
 )
 from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
@@ -32,36 +40,19 @@ from scaling_llms.utils.loggers import DataLogger
 
 
 # ============================================================
-# DETERMINISM (single GPU)
-# ============================================================
-def set_determinism(seed: int) -> None:
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
-    # Strict determinism (can throw if you use nondeterministic ops)
-    # Comment out if it blocks you during early bring-up.
-    torch.use_deterministic_algorithms(True)
-
-
-# ============================================================
 # TOKENIZER (tiktoken preferred)
 # ============================================================
 def load_tokenizer(name: str):
-    
+
     if name == "gpt2_tiktoken":
         enc = tiktoken.get_encoding("gpt2")
+
         def encode_fn(text: str) -> list[int]:
             return enc.encode(text)
-        
+
         def decode_fn(ids: list[int]) -> str:
             return enc.decode(ids)
-        
+
         return {
             "encode": encode_fn,
             "decode": decode_fn,
@@ -72,6 +63,11 @@ def load_tokenizer(name: str):
 
     else:
         raise ValueError(f"Unsupported tokenizer library: {name}")
+
+
+def get_vocab_size(tokenizer_name: str) -> int:
+    tokenizer = load_tokenizer(tokenizer_name)
+    return tokenizer["vocab_size"]
 
 
 # ============================================================
@@ -111,9 +107,11 @@ def build_memmap_tokens(
 
     # Skip tokenization if final memmap already exists
     if token_mmap_path.exists():
-        print(f"Found existing token memmap at {token_mmap_path}, skipping tokenization.")
+        print(
+            f"Found existing token memmap at {token_mmap_path}, skipping tokenization."
+        )
         existing_n_tokens = token_mmap_path.stat().st_size // np.dtype(dtype).itemsize
-        return int(existing_n_tokens)  
+        return int(existing_n_tokens)
 
     print(f"Token memmap not found at {token_mmap_path}, building now...")
 
@@ -167,6 +165,7 @@ def build_memmap_tokens(
 def load_memmap_tokens(local_mmap_path: str | Path, dtype: np.dtype) -> np.memmap:
     return np.memmap(local_mmap_path, mode="r", dtype=dtype)
 
+
 # ============================================================
 # HUGGINGFACE DATASETS
 # ============================================================
@@ -178,7 +177,7 @@ def load_text_splits_from_hf(
     text_field: str = "text",
     cache_dir: Path | None = None,
 ) -> tuple[list[str], list[str]]:
-    
+
     kwargs = dict(
         path=dataset_name,
         name=dataset_config,
@@ -226,7 +225,7 @@ class DeterministicTokenWindows(Dataset):
             raise ValueError("Token buffer too small for seq_len")
 
     def __len__(self) -> int:
-        return 2**63 - 1 # effectively infinite (max int64)
+        return 2**63 - 1  # effectively infinite (max int64)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         # Hash sample idx to get a pseudo-random but deterministic window start
@@ -237,7 +236,8 @@ class DeterministicTokenWindows(Dataset):
 
         # Return input and target windows as PyTorch tensors
         x = np.asarray(
-            self.tokens_memmap_buffer[start_index : start_index + self.seq_len], dtype=np.int64
+            self.tokens_memmap_buffer[start_index : start_index + self.seq_len],
+            dtype=np.int64,
         )
         y = np.asarray(
             self.tokens_memmap_buffer[start_index + 1 : start_index + 1 + self.seq_len],
@@ -247,19 +247,48 @@ class DeterministicTokenWindows(Dataset):
 
 
 class OffsetDataset(Dataset):
-    """View a dataset starting at a global sample index (for resume)."""
+    """
+    Resume + DDP sharding in one class.
+    - offset: consumed_samples (rank-agnostic resume point)
+    - rank / world_size: default to 0/1 for single-GPU (no-op)
 
-    def __init__(self, dataset: Dataset, offset_start: int):
+    Offseting:
+    ----------
+    Views a dataset starting at a global sample index for resuming training.
+    global_sample_idx = offset + i, where i is the index within the Dataset.
+
+    DDP sharding:
+    -------------
+    Shards an infinite dataset across DDP ranks via strided indexing.
+
+    Each rank *r* (of *W* total) sees indices ``r, W+r, 2W+r, …``.
+
+    Offseting + DDP sharding:
+    -------------------------
+    The final global index is ``offset + rank + i * world_size``.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        offset_start: int,
+        rank: int = 0,
+        world_size: int = 1,
+    ):
         self.dataset = dataset
         self.offset = int(offset_start)
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+
         if self.offset < 0 or self.offset > len(self.dataset):
             raise ValueError("Invalid start")
 
     def __len__(self) -> int:
-        return 2**63 - 1 # effectively infinite
+        return 2**63 - 1  # effectively infinite
 
     def __getitem__(self, i: int):
-        return self.dataset[self.offset + i]
+        global_idx = self.offset + self.rank + i * self.world_size
+        return self.dataset[global_idx]
 
 
 class SequentialTokenChunks(Dataset):
@@ -280,7 +309,9 @@ class SequentialTokenChunks(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = idx * self.seq_len  # start index of the chunk
         x = np.asarray(self.tokens_memmap_buffer[i : i + self.seq_len], dtype=np.int64)
-        y = np.asarray(self.tokens_memmap_buffer[i + 1 : i + 1 + self.seq_len], dtype=np.int64)
+        y = np.asarray(
+            self.tokens_memmap_buffer[i + 1 : i + 1 + self.seq_len], dtype=np.int64
+        )
         return torch.from_numpy(x), torch.from_numpy(y)
 
 
@@ -293,19 +324,22 @@ def make_tokenized_dataset(
     local_train_mmap_path: Path,
     local_eval_mmap_path: Path,
     local_hf_cache_dir: Path,
-    local_tokenized_cache_dir: Path,
 ) -> DatasetArtifactsDir:
     """
     TODO
     """
     # Load tokenizer
     tokenizer = load_tokenizer(dataset_id.tokenizer_name)
-    encode_fn, eos_id, vocab_size = tokenizer["encode"], tokenizer["eot_token"], tokenizer["vocab_size"]
+    encode_fn, eos_id, vocab_size = (
+        tokenizer["encode"],
+        tokenizer["eot_token"],
+        tokenizer["vocab_size"],
+    )
 
     # Use smallest unsigned dtype that can represent all token ids to save memory
     dtype = np.dtype(np.uint16 if vocab_size <= 65535 else np.uint32)
-    
-    # STEP 1: Load raw text splits from HuggingFace datasets (optionally sliced) 
+
+    # STEP 1: Load raw text splits from HuggingFace datasets (optionally sliced)
     train_texts, eval_texts = load_text_splits_from_hf(
         dataset_name=dataset_id.dataset_name,
         train_split=dataset_id.train_split,
@@ -315,8 +349,8 @@ def make_tokenized_dataset(
         cache_dir=local_hf_cache_dir,
     )
 
-    # STEP 2: Tokenization 
-    # Tokenize to memmap once and reuse forever 
+    # STEP 2: Tokenization
+    # Tokenize to memmap once and reuse forever
     # (efficient random access without loading all tokens into RAM)
     # Note: for large datasets, this may take time and disk space on first run,
     # but subsequent runs will be fast and efficient due to memory-mapping.
@@ -347,7 +381,7 @@ def make_tokenized_dataset(
         eos_id=eos_id,
         dtype=dtype.name,
         total_train_tokens=total_train_tokens,
-        total_eval_tokens=total_eval_tokens
+        total_eval_tokens=total_eval_tokens,
     )
 
     artifacts_dir = dataset_registry.register_dataset(
@@ -379,11 +413,38 @@ class DataLoaderConfig(BaseJsonConfig):
     pin_memory: bool = True
     drop_last: bool = False
     persistent_workers: bool = False
-    prefetch_factor: int = 2
+    prefetch_factor: int | None = 2   # None = disabled (required when num_workers=0)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.start_sample_idx < 0:
-            raise ValueError(f"start_sample_idx must be >= 0, got {self.start_sample_idx}")
+            raise ValueError(
+                f"start_sample_idx must be >= 0, got {self.start_sample_idx}"
+            )
+        if self.num_workers == 0:
+            if self.prefetch_factor is not None:
+                raise ValueError(
+                    "prefetch_factor must be None when num_workers=0 "
+                    f"(got prefetch_factor={self.prefetch_factor})"
+                )
+            if self.persistent_workers:
+                raise ValueError(
+                    "persistent_workers must be False when num_workers=0"
+                )
+
+    def get_performance_kwargs(self) -> dict:
+        """
+        Returns kwargs safe to pass directly to torch DataLoader.
+        Guards prefetch_factor and pin_memory against num_workers=0.
+        """
+        uses_workers = self.num_workers > 0
+        return dict(
+            shuffle=False, # must stay False when sampler is provided and windows are already deterministic/randomized
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory and uses_workers,
+            drop_last=self.drop_last,
+            persistent_workers=self.persistent_workers and uses_workers,
+            prefetch_factor=self.prefetch_factor if uses_workers else None,
+        )
 
 
 def make_dataloaders(
@@ -392,8 +453,12 @@ def make_dataloaders(
     local_eval_mmap_path: Path,
     dtype: np.dtype,
     # Dataloader Config
-    dataloader_config: DataLoaderConfig
+    dataloader_config: DataLoaderConfig,
 ) -> dict[str, Any]:
+    # DDP info for deterministic sampling and distributed eval; 
+    # defaults to single-GPU if not distributed (rank 0, world size 1)
+    rank = get_global_rank()
+    world_size = get_world_size()
 
     # STEP 1: Load token buffers using memory-mapping for efficient random access without loading all tokens into RAM
     train_tokens_buffer = load_memmap_tokens(local_train_mmap_path, dtype=dtype)
@@ -409,6 +474,9 @@ def make_dataloaders(
     train_ds = OffsetDataset(
         deterministic_train_ds,
         offset_start=dataloader_config.start_sample_idx,
+        # DDP sharding (no-op for single GPU)
+        rank=rank,
+        world_size=world_size,
     )
 
     ## b) Eval DS: sequential non-overlapping chunks
@@ -417,18 +485,29 @@ def make_dataloaders(
         seq_len=dataloader_config.seq_len,
     )
 
-    # STEP 3: Create PyTorch dataloaders
-    dl_kwargs = dict(
-        shuffle=False, # windows are already deterministic/randomized
-        num_workers=dataloader_config.num_workers,
-        pin_memory=dataloader_config.pin_memory,
-        drop_last=dataloader_config.drop_last,
-        persistent_workers=dataloader_config.persistent_workers,
-        prefetch_factor=dataloader_config.prefetch_factor
-    )
+    eval_sampler = None
+    if is_distributed():
+        eval_sampler = DistributedSampler(
+            eval_ds,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
 
-    train_dl = DataLoader(train_ds, batch_size=dataloader_config.train_batch_size, **dl_kwargs)
-    eval_dl = DataLoader(eval_ds, batch_size=dataloader_config.eval_batch_size, **dl_kwargs)
+    # STEP 3: Create PyTorch dataloaders
+    dl_kwargs = dataloader_config.get_performance_kwargs()
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=dataloader_config.train_batch_size,
+        **dl_kwargs,
+    )
+    eval_dl = DataLoader(
+        eval_ds,
+        batch_size=dataloader_config.eval_batch_size,
+        sampler=eval_sampler,
+        **dl_kwargs,
+    )
 
     return {
         "train": train_dl,
@@ -450,8 +529,12 @@ class LocalCachePaths:
         cache_dir, tmp_dir = self._prepare_cache_dir(self.cache_dir)
         object.__setattr__(self, "cache_dir", cache_dir)
         object.__setattr__(self, "tmp_dir", tmp_dir)
-        object.__setattr__(self, "hf_cache_dir", Path(self.cache_dir) / HF_CACHE_DIR_NAME)
-        object.__setattr__(self, "tokenized_cache_dir", Path(self.cache_dir) / TOKENIZED_CACHE_DIR_NAME)
+        object.__setattr__(
+            self, "hf_cache_dir", Path(self.cache_dir) / HF_CACHE_DIR_NAME
+        )
+        object.__setattr__(
+            self, "tokenized_cache_dir", Path(self.cache_dir) / TOKENIZED_CACHE_DIR_NAME
+        )
 
     def dataset_dir(self, dataset_id: DatasetIdentity) -> Path:
         return self.tokenized_cache_dir / dataset_id.slug()
@@ -461,16 +544,19 @@ class LocalCachePaths:
 
     def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
         return self.dataset_dir(dataset_id) / DATASET_FILES.eval_tokens
-    
+
     def cleanup_if_tmp_dir(self) -> None:
         if self.tmp_dir is not None:
             self.tmp_dir.cleanup()
 
-    def _prepare_cache_dir(self, cache_dir: Path | None) -> tuple[Path, TemporaryDirectory | None]:
+    def _prepare_cache_dir(
+        self, cache_dir: Path | None
+    ) -> tuple[Path, TemporaryDirectory | None]:
         if cache_dir is not None:
             return cache_dir, None
         tmp_dir = TemporaryDirectory(prefix="scaling-llms-data-")
         return Path(tmp_dir.name), tmp_dir
+
 
 def get_dataloaders(
     dataset_id: DatasetIdentity,
@@ -489,38 +575,50 @@ def get_dataloaders(
     )
 
     logger.log_dataset_id(dataset_id)
-    logger.log_dataloader_config(dataloader_config)    
+    logger.log_dataloader_config(dataloader_config)
 
-    # STEP 1: Prepare tmp paths for token memmaps 
+    # STEP 1: Prepare tmp paths for token memmaps
     cache_paths = LocalCachePaths(cache_dir)
     train_mmap_cache_path = cache_paths.train_mmap_path(dataset_id)
     eval_mmap_cache_path = cache_paths.eval_mmap_path(dataset_id)
 
     # STEP 2: Create tokenized dataset and register in Data Registry if not already present
-    if dataset_registry.dataset_exists(dataset_id):
-        logger.log_tokenization("Token memmaps already exist in Data Registry, proceeding to create dataloaders...")
+    # In DDP, only rank 0 prepares data to avoid race conditions on memmap writes.
+    _is_main = is_main_process()
+    if _is_main:
+        if dataset_registry.dataset_exists(dataset_id):
+            logger.log_tokenization(
+                "Token memmaps already exist in Data Registry, proceeding to create dataloaders..."
+            )
+            artifacts_dir = dataset_registry.get_dataset_artifacts(
+                dataset_id,
+                raise_if_not_found=True,
+            )
+        else:
+            logger.log_tokenization(
+                "Token memmaps not found in Data Registry, proceeding with local preparation and upload..."
+            )
+            artifacts_dir = make_tokenized_dataset(
+                dataset_id=dataset_id,
+                dataset_registry=dataset_registry,
+                local_train_mmap_path=train_mmap_cache_path,
+                local_eval_mmap_path=eval_mmap_cache_path,
+                local_hf_cache_dir=cache_paths.hf_cache_dir,
+            )
+            cache_paths.cleanup_if_tmp_dir()
+
+    barrier_if_distributed()  # wait for rank 0 to finish data preparation (no-op single GPU)
+
+    if is_distributed() and (not _is_main):
         artifacts_dir = dataset_registry.get_dataset_artifacts(
-            dataset_id,
-            raise_if_not_found=True,
+            dataset_id, raise_if_not_found=True
         )
-    else:
-        logger.log_tokenization("Token memmaps not found in Data Registry, proceeding with local preparation and upload...")
-        artifacts_dir = make_tokenized_dataset(
-            dataset_id=dataset_id,
-            dataset_registry=dataset_registry,
-            local_train_mmap_path=train_mmap_cache_path,
-            local_eval_mmap_path=eval_mmap_cache_path,
-            local_hf_cache_dir=cache_paths.hf_cache_dir,
-            local_tokenized_cache_dir=cache_paths.tokenized_cache_dir,
-        )
-        
-        cache_paths.cleanup_if_tmp_dir()  # clean up any temporary cache directory if we created one
 
     # Load dataset info from Data Registry
     dataset_info = dataset_info or dataset_registry.get_dataset_info(dataset_id)
     dtype = np.dtype(dataset_info.dtype)
     logger.log_dataset_info(dataset_info)
-    
+
     # STEP 4: Create dataloaders
     logger.log_dataloader_creation(
         "Creating deterministic training dataset with random windows "
@@ -530,7 +628,7 @@ def get_dataloaders(
         local_train_mmap_path=artifacts_dir.train_bin,
         local_eval_mmap_path=artifacts_dir.eval_bin,
         dtype=dtype,
-        dataloader_config=dataloader_config
+        dataloader_config=dataloader_config,
     )
 
     logger.log_dataloader_creation(

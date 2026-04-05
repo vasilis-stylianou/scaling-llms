@@ -10,11 +10,13 @@ from typing import Any
 from dataclasses import dataclass
 from enum import StrEnum
 
-from scaling_llms.constants import (
-    CKPT_FILES,
-    METADATA_FILES,
-)
-from scaling_llms.data import DataLoaderConfig, get_dataloaders
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from scaling_llms.checkpointing import instantiate_model_from_run
+from scaling_llms.constants import CKPT_FILES, METADATA_FILES
+from scaling_llms.data import DataLoaderConfig, get_dataloaders, get_vocab_size
+from scaling_llms.distributed import barrier_if_distributed, is_distributed, is_main_process
 from scaling_llms.models import GPTConfig, GPTModel
 from scaling_llms.registries import (
     DatasetIdentity,
@@ -22,13 +24,14 @@ from scaling_llms.registries import (
     RunIdentity,
     RunRegistry,
 )
+from scaling_llms.tracking.run import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
-
+from scaling_llms.utils.training import make_lr_scheduler, set_determinism
 
 # =============================================================================
 # Shared functions
 # =============================================================================
-def build_model(
+def build_raw_model(
     *,
     seq_len: int,
     vocab_size: int,
@@ -42,121 +45,273 @@ def build_model(
     return GPTModel(model_cfg)
 
 
+def build_trainer(
+    cfg: TrainerConfig,
+    raw_model: torch.nn.Module,
+    train_dl=None,
+    eval_dl=None,
+    run=None,
+) -> Trainer:
+    """
+    Owns the full setup order:
+      1. move raw_model to device
+      2. wrap with DDP if is distributed
+      3. compile if use_compile
+      4. create optimizer, scaler, scheduler
+      5. construct Trainer
+    """
+    # Ensure determinism before any GPU work 
+    # (e.g. in DDP all models must have same initial weights)
+    set_determinism(cfg.seed) 
+    
+    # 1. Move to device
+    raw_model.to(cfg.device)
+
+    # 2. DDP
+    model = raw_model
+    if is_distributed():
+        model = DDP(model, device_ids=[cfg.local_rank])
+
+    # 3. Compile
+    if cfg.use_compile:
+        model = torch.compile(model)
+
+    # 4. Training objects
+    scaler = torch.cuda.amp.GradScaler(
+        enabled=(cfg.precision == "fp16") and cfg.device.startswith("cuda")
+    )
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.lr,
+        betas=(cfg.beta1, cfg.beta2),
+        weight_decay=cfg.weight_decay,
+    )
+    lr_scheduler = make_lr_scheduler(optimizer, cfg)
+
+    # 5. Trainer
+    return Trainer(
+        cfg=cfg,
+        model=model,
+        raw_model=raw_model,
+        optimizer=optimizer,
+        scaler=scaler,
+        lr_scheduler=lr_scheduler,
+        train_dl=train_dl,
+        eval_dl=eval_dl,
+        run=run,
+    )
+
+
+def load_training_state(
+    ckpt: dict[str, Any],
+    optimizer: torch.optim.Optimizer | None,
+    scaler: torch.cuda.amp.GradScaler | None,
+    lr_scheduler: Any,
+    device: str,
+) -> dict[str, Any]:
+    """
+    Restore optimizer/scaler/lr_scheduler/trainer state into already-constructed
+    training objects. Assumes ckpt was loaded with map_location='cpu'.
+    """
+
+    # Optimizer — restore state, then move tensors to device manually
+    if optimizer is not None and ckpt.get("optimizer") is not None:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+
+    # Scaler
+    if (
+        scaler is not None
+        and scaler.is_enabled()
+        and ckpt.get("scaler") is not None
+    ):
+        scaler.load_state_dict(ckpt["scaler"])
+
+    # LR Scheduler
+    if lr_scheduler is not None and ckpt.get("lr_scheduler") is not None:
+        lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+
+    return ckpt.get("trainer", {})
+
+
+def load_trainer_from_checkpoint(
+    ckpt_run: Run,
+    ckpt_filename: str,
+    reset_state: bool = False,
+    active_run: Run | None = None,
+) -> Trainer:
+    """
+    Load a checkpoint from disk and restore model weights, optimizer state, etc.
+
+    Returns a Trainer with model moved to device and ready for training or evaluation.
+
+    If reset_state=True, only model weights are loaded; optimizer/scaler/scheduler 
+    state is ignored and left at initial values.
+    """
+    cfg = TrainerConfig.from_json(
+        ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.trainer_config)
+    )
+
+    # 1. Instantiate raw model on CPU
+    raw_model = instantiate_model_from_run(ckpt_run)
+
+    # 2. Read checkpoint once on CPU
+    ckpt_path = ckpt_run.artifacts_dir.checkpoint_path(ckpt_filename)
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+
+    # 3. Load model weights into raw CPU model
+    raw_model.load_state_dict(ckpt["model"])
+    
+    # 4. Build trainer; this moves model to device and wraps DDP/compile
+    trainer = build_trainer(
+        cfg=cfg,
+        raw_model=raw_model,
+        run=active_run,
+    )
+
+    # 5) Restore optimizer / scaler / scheduler / trainer state from checkpoint
+    # and move to device.
+    if not reset_state:
+        trainer_state = load_training_state(
+            ckpt,
+            optimizer=trainer.optimizer,
+            scaler=trainer.scaler,
+            lr_scheduler=trainer.lr_scheduler,
+            device=cfg.device,
+        )
+        trainer.load_state_dict(trainer_state)
+
+    return trainer
+
+
 def init_trainer(
     *,
-    run: Any,
     dataset_registry: DatasetRegistry,
     dataset_id: DatasetIdentity,
     dl_cfg: DataLoaderConfig,
     trainer_cfg: TrainerConfig,
     gpt_hparams: dict[str, Any],
+    run: Run | None = None,
 ) -> Trainer:
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
         dataloader_config=dl_cfg,
-        run=run,
+        run=run, # if not None, used for printing logs 
     )
+    if run is not None:
+        run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+        run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
 
-    run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
-    run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
-
-    model = build_model(
+    raw_model = build_raw_model(
         seq_len=dl_cfg.seq_len,
         vocab_size=dl_dict["info"]["vocab_size"],
         gpt_hparams=gpt_hparams,
     )
 
-    return Trainer(
+    return build_trainer(
         cfg=trainer_cfg,
-        model=model,
+        raw_model=raw_model,
         train_dl=dl_dict["train"],
         eval_dl=dl_dict["eval"],
         run=run,
     )
 
 
-def trainer_from_checkpoint(
+def build_trainer_from_checkpoint(
     *,
-    run: Any,
+    ckpt_run: Run,
     dataset_registry: DatasetRegistry,
     ckpt_filename: str,
     reset_state: bool,
+    active_run: Run | None = None,
 ) -> Trainer:
-    trainer = Trainer.from_checkpoint(
-        run,
-        ckpt_name=ckpt_filename,
-        reset_state=reset_state,
-    )
+    # Load trainer from checkpoint, which also moves model to device and wraps DDP/compile
+    trainer = load_trainer_from_checkpoint(ckpt_run, ckpt_filename, reset_state=reset_state, active_run=active_run)
 
+    # Build dataloaders and attach to trainer
     dataset_id = DatasetIdentity.from_json(
-        path=run.artifacts_dir.metadata_path(METADATA_FILES.dataset_id)
+        path=ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.dataset_id)
     )
     dl_cfg = DataLoaderConfig.from_json(
-        path=run.artifacts_dir.metadata_path(METADATA_FILES.dataloader_config),
-        overwrite_data={"start_sample_idx": trainer.step_idx},
+        path=ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.dataloader_config),
+        overwrite_data={"start_sample_idx": trainer.consumed_samples},
     )
-
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
         dataloader_config=dl_cfg,
-        run=run,
+        run=active_run,
     )
-
     trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
+
     return trainer
 
 
 def validate_checkpoint_compatibility(
     *,
-    source_run: Any,
-    target_dataloader_kwargs: dict[str, Any],
-    target_dl_info: dict[str, Any],
+    ckpt_run: Run,
+    target_seq_len: int,
+    target_vocab_size: int,
 ) -> None:
     old_dl_kwargs = json.loads(
-        source_run.artifacts_dir.metadata_path(METADATA_FILES.dataloader_config).read_text()
+        ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.dataloader_config).read_text()
     )
-    if old_dl_kwargs["seq_len"] != target_dataloader_kwargs["seq_len"]:
+    if old_dl_kwargs["seq_len"] != target_seq_len:
         raise ValueError(
             f"Sequence length mismatch between old run ({old_dl_kwargs['seq_len']}) "
-            f"and new run ({target_dataloader_kwargs['seq_len']}). "
+            f"and new run ({target_seq_len}). "
             "Checkpoint loading may fail."
         )
 
     old_model_kwargs = json.loads(
-        source_run.artifacts_dir.metadata_path(METADATA_FILES.model_config).read_text()
+        ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.model_config).read_text()
     )
-    if old_model_kwargs["vocab_size"] != target_dl_info["vocab_size"]:
+    if old_model_kwargs["vocab_size"] != target_vocab_size:
         raise ValueError(
             f"Vocab size mismatch between old run ({old_model_kwargs['vocab_size']}) "
-            f"and new run ({target_dl_info['vocab_size']}). "
+            f"and new run ({target_vocab_size}). "
             "Checkpoint loading may fail."
         )
 
 
-def build_transfer_dataloaders(
+def build_trainer_from_checkpoint_transfer(
     *,
-    run: Any,
+    ckpt_run: Run,
+    ckpt_filename: str,
     dataset_registry: DatasetRegistry,
     dataset_kwargs: dict[str, Any],
     dataloader_kwargs: dict[str, Any],
-) -> tuple[DatasetIdentity, DataLoaderConfig, dict[str, Any]]:
+    active_run: Run | None = None,
+) -> Trainer:
     
+    # Load model weights only and reset training state
+    trainer = load_trainer_from_checkpoint(
+        ckpt_run=ckpt_run,
+        ckpt_filename=ckpt_filename,
+        reset_state=True, # weights only; skip loading training state
+        active_run=active_run,
+    )
+
+    # Build dataloaders and attach to trainer
     dataset_id = DatasetIdentity(**dataset_kwargs)
     dl_cfg = DataLoaderConfig(**dataloader_kwargs)
-
-    run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
-    run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
-
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
         dataloader_config=dl_cfg,
-        run=run,
+        run=active_run,
     )
-    return dataset_id, dl_cfg, dl_dict
+    trainer.attach_dataloaders(dl_dict["train"], dl_dict["eval"])
 
+    if active_run is not None:
+        active_run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
+        active_run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
+
+    return trainer
 
 # =============================================================================
 # EXPERIMENT RUNNER
@@ -312,6 +467,31 @@ class ExperimentRunner:
         self.run_registry = run_registry
         self.dataset_registry = dataset_registry
 
+    def _main_process_train(
+        self, 
+        identity: RunIdentity, 
+        trainer: Trainer, 
+        max_steps: int | None
+    ) -> None:
+        self.run_registry.set_device_name(identity, trainer.cfg.device_name)
+                
+        other_data = trainer.get_runtime_info()
+        other_data.update({f"start_{k}": v for k, v in trainer.state_dict().items()})
+        other_data["max_steps"] = max_steps
+        other_data["num_steps"] = trainer.cfg.num_steps
+
+        barrier_if_distributed()
+        trainer.train(max_steps=max_steps)
+        barrier_if_distributed()
+
+        other_data.update({f"end_{k}": v for k, v in trainer.state_dict().items()})
+        self.run_registry.set_other_data(identity, other_data)
+
+    def _non_main_process_train(self, trainer: Trainer, max_steps: int | None) -> None:
+        barrier_if_distributed()
+        trainer.train(max_steps=max_steps)
+        barrier_if_distributed()
+
     def start(
         self,
         run_name: str,
@@ -324,34 +504,51 @@ class ExperimentRunner:
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
     ) -> Trainer | None:
+
+        _is_main = is_main_process()
+
         identity = RunIdentity(self.exp_name, run_name)
         if ignore_if_run_exists and self.run_registry.run_exists(identity):
-            print(
-                f"Run {self.exp_name}/{run_name} already exists, "
-                "but ignore_if_run_exists=True, so ignoring and proceeding."
-            )
+            if _is_main:
+                print(
+                    f"Run {self.exp_name}/{run_name} already exists, "
+                    "but ignore_if_run_exists=True, so ignoring and proceeding."
+                )
             return None
 
         dataset_id = DatasetIdentity(**dataset_kwargs)
         dl_cfg = DataLoaderConfig(**dataloader_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
-        with self.run_registry.managed_run(
-            identity,
-            resume=False,
-            overwrite=overwrite,
-        ) as run:
+        if _is_main:
+            with self.run_registry.managed_run(
+                identity,
+                resume=False,
+                overwrite=overwrite,
+            ) as run:
+                trainer = init_trainer(
+                    dataset_registry=self.dataset_registry,
+                    dataset_id=dataset_id,
+                    dl_cfg=dl_cfg,
+                    trainer_cfg=trainer_cfg,
+                    gpt_hparams=gpt_hparams,
+                    run=run,
+                )
+                self._main_process_train(identity, trainer, max_steps)
+        else:
+            # Distributed worker processes skip run creation and directly init trainer and train.
             trainer = init_trainer(
-                run=run,
                 dataset_registry=self.dataset_registry,
                 dataset_id=dataset_id,
                 dl_cfg=dl_cfg,
                 trainer_cfg=trainer_cfg,
                 gpt_hparams=gpt_hparams,
+                run=None, # pass None since only main process creates the run
             )
-            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
-            trainer.train(max_steps=max_steps)
-            return trainer
+
+            self._non_main_process_train(trainer, max_steps)
+
+        return trainer
 
     def resume(
         self,
@@ -361,20 +558,32 @@ class ExperimentRunner:
         max_steps: int | None = None,
     ) -> Trainer:
         identity = RunIdentity(self.exp_name, run_name)
-        with self.run_registry.managed_run(
-            identity,
-            resume=True,
-            overwrite=False,
-        ) as run:
-            trainer = trainer_from_checkpoint(
-                run=run,
-                dataset_registry=self.dataset_registry,
-                ckpt_filename=ckpt_filename,
-                reset_state=False,
-            )
-            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
-            trainer.train(max_steps=max_steps)
-            return trainer
+        if is_main_process():
+            with self.run_registry.managed_run(
+                identity,
+                resume=True,
+                overwrite=False,
+            ) as run:
+                trainer = build_trainer_from_checkpoint(
+                    ckpt_run=run,
+                    dataset_registry=self.dataset_registry,
+                    ckpt_filename=ckpt_filename,
+                    reset_state=False,
+                    active_run=run,
+                )
+                self._main_process_train(identity, trainer, max_steps)
+        else:
+            run = self.run_registry.get_run(identity)
+            trainer = build_trainer_from_checkpoint(
+                    ckpt_run=run,
+                    dataset_registry=self.dataset_registry,
+                    ckpt_filename=ckpt_filename,
+                    reset_state=False,
+                    active_run=None, # pass None since only main process manages the run
+                )
+            self._non_main_process_train(trainer, max_steps)
+
+        return trainer
 
     def start_from_checkpoint(
         self,
@@ -388,71 +597,78 @@ class ExperimentRunner:
         max_steps: int | None = None,
         overwrite: bool = False,
         ignore_if_run_exists: bool = False,
-    ) -> Trainer:
+    ) -> Trainer | None:
+        _is_main = is_main_process()
+
+        # Validate run existence 
         identity = RunIdentity(self.exp_name, run_name)
         if ignore_if_run_exists and self.run_registry.run_exists(identity):
-            print(
-                f"Run {self.exp_name}/{run_name} already exists, "
-                "but ignore_if_run_exists=True, so ignoring and proceeding."
-            )
+            if _is_main:
+                print(
+                    f"Run {self.exp_name}/{run_name} already exists, "
+                    "but ignore_if_run_exists=True, so ignoring and proceeding."
+                )
             return None
-        with self.run_registry.managed_run(
-            identity,
-            resume=False,
-            overwrite=overwrite,
-        ) as new_run:
-            new_run.log_metadata(
-                {
-                    "initialized_from": {
-                        "exp": ckpt_exp_name,
-                        "run": ckpt_run_name,
-                        "ckpt": ckpt_filename,
-                    }
-                },
-                "source_checkpoint.json",
-                format="json",
-            )
+        
+        # Validate checkpoint compatibility 
+        ckpt_run = self.run_registry.get_run(RunIdentity(ckpt_exp_name, ckpt_run_name))
+        validate_checkpoint_compatibility(
+            ckpt_run=ckpt_run,
+            target_seq_len=dataloader_kwargs["seq_len"],
+            target_vocab_size=get_vocab_size(dataset_kwargs["tokenizer_name"]),
+        )
+        
+        # Load model weights from checkpoint, init trainer, and train. 
+        # Only main process manages the run; other processes just init trainer and train.
+        if _is_main:
+            with self.run_registry.managed_run(
+                identity,
+                resume=False,
+                overwrite=overwrite,
+            ) as run:
+                run.log_metadata(
+                    {
+                        "initialized_from": {
+                            "exp": ckpt_exp_name,
+                            "run": ckpt_run_name,
+                            "ckpt": ckpt_filename,
+                        }
+                    },
+                    "source_checkpoint.json",
+                    format="json",
+                )
 
-            _, _, dl_dict = build_transfer_dataloaders(
-                run=new_run,
+                trainer = build_trainer_from_checkpoint_transfer(
+                    ckpt_run=ckpt_run,
+                    ckpt_filename=ckpt_filename,
+                    dataset_registry=self.dataset_registry,
+                    dataset_kwargs=dataset_kwargs,
+                    dataloader_kwargs=dataloader_kwargs,
+                    active_run=run,
+                )
+                self._main_process_train(identity, trainer, max_steps)
+        else:
+            trainer = build_trainer_from_checkpoint_transfer(
+                ckpt_run=ckpt_run,
+                ckpt_filename=ckpt_filename,
                 dataset_registry=self.dataset_registry,
                 dataset_kwargs=dataset_kwargs,
                 dataloader_kwargs=dataloader_kwargs,
+                active_run=None, # pass None since only main process manages the run
             )
+            self._non_main_process_train(trainer, max_steps)
 
-            with self.run_registry.managed_run(
-                RunIdentity(ckpt_exp_name, ckpt_run_name),
-                resume=True,
-                overwrite=False,
-            ) as old_run:
-                validate_checkpoint_compatibility(
-                    source_run=old_run,
-                    target_dataloader_kwargs=dataloader_kwargs,
-                    target_dl_info=dl_dict["info"],
-                )
+        return trainer
 
-                trainer = Trainer.from_checkpoint(
-                    old_run,
-                    ckpt_name=ckpt_filename,
-                    train_dl=dl_dict["train"],
-                    eval_dl=dl_dict["eval"],
-                    reset_state=True,
-                )
-
-            trainer.attach_run(new_run)
-            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
-            trainer.train(max_steps=max_steps)
-            return trainer
-        
     def run(self, config: RunConfig) -> Trainer | None:
 
         if config.method == RunMethod.START:
             return self.start(
                 run_name=config.run_name,
-                dataset_kwargs=config.dataset_kwargs or {},
-                dataloader_kwargs=config.dataloader_kwargs or {},
-                gpt_hparams=config.gpt_hparams or {},
-                trainer_kwargs=config.trainer_kwargs or {},
+                dataset_kwargs=config.dataset_kwargs,
+                dataloader_kwargs=config.dataloader_kwargs,
+                gpt_hparams=config.gpt_hparams,
+                trainer_kwargs=config.trainer_kwargs,
                 max_steps=config.max_steps,
                 overwrite=config.overwrite,
                 ignore_if_run_exists=config.ignore_if_run_exists,
@@ -468,10 +684,10 @@ class ExperimentRunner:
         if config.method == RunMethod.START_FROM_CHECKPOINT:
             return self.start_from_checkpoint(
                 run_name=config.run_name,
-                dataset_kwargs=config.dataset_kwargs or {},
-                dataloader_kwargs=config.dataloader_kwargs or {},
-                ckpt_exp_name=config.ckpt_exp_name or "",
-                ckpt_run_name=config.ckpt_run_name or "",
+                dataset_kwargs=config.dataset_kwargs,
+                dataloader_kwargs=config.dataloader_kwargs,
+                ckpt_exp_name=config.ckpt_exp_name,
+                ckpt_run_name=config.ckpt_run_name,
                 ckpt_filename=config.ckpt_filename,
                 max_steps=config.max_steps,
                 overwrite=config.overwrite,
@@ -479,7 +695,6 @@ class ExperimentRunner:
             )
 
         raise ValueError(f"Unsupported method: {config.method}")
-
 
 
 @dataclass(slots=True)

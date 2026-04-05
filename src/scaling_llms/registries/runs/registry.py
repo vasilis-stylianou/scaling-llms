@@ -12,7 +12,11 @@ from scaling_llms.registries.core.artifacts_sync import make_sync_hooks
 from scaling_llms.registries.core.registry import MakeRegistryConfig
 from scaling_llms.registries.runs.artifacts import RunArtifacts
 from scaling_llms.registries.runs.metadata import RunIdentity, RunMetadata
-from scaling_llms.tracking import Run
+
+# NOTE: for type hints only, avoid circular import at runtime
+from typing import TYPE_CHECKING, Iterator
+if TYPE_CHECKING:
+    from scaling_llms.tracking import Run
 
 
 class RunStatus(StrEnum):
@@ -53,6 +57,13 @@ class RunRegistry:
     def set_device_name(self, identity: RunIdentity, device_name: str | None) -> None:
         self.metadata.set_device_name(identity, device_name)
 
+    def set_other_data(
+        self, 
+        identity: RunIdentity, 
+        data: dict[str, str | int | float | bool],
+    ) -> None:
+        self.metadata.set_other_data(identity, data)
+    
     def get_run_metadata(
         self, 
         identity: RunIdentity, 
@@ -94,6 +105,8 @@ class RunRegistry:
         identity: RunIdentity, 
         raise_if_not_found: bool = True
     ) -> Run:
+        from scaling_llms.tracking import Run
+
         artifacts_dir = self.get_run_artifacts(identity, raise_if_not_found=raise_if_not_found)
         
         return Run(artifacts_dir)
@@ -116,6 +129,8 @@ class RunRegistry:
         resume: bool = False,
         overwrite: bool = False,
     ) -> Run:
+        from scaling_llms.tracking import Run
+
         # Validate run existence and handle according to resume/overwrite flags
         exists = self.run_exists(identity)
         if exists and resume:
@@ -225,8 +240,9 @@ class RunRegistry:
         resume: bool = False,
         overwrite: bool = False,
         fail_on_sync_error: bool = True,
-    ):
-        
+    ) -> Iterator["Run"]:
+        from scaling_llms.tracking import Run  # local import, runs at runtime
+
         def _safe_set(status_value: str) -> None:
             try:
                 self.metadata.set_status_value(identity, status_value)

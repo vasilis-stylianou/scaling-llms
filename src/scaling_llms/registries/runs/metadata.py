@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from scaling_llms.registries.core.metadata_backend import MetadataBackend
@@ -65,6 +66,20 @@ class RunMetadata(MetadataDB):
         self.execute(
             f"UPDATE {self.table_name} SET device_name=:device_name WHERE {self._build_identity_placeholders(identity)}",
             {"device_name": device_name, **identity.as_kwargs()},
+        )
+
+    def set_other_data(self, identity: RunIdentity, data: dict[str, str | int | float | bool]) -> None:
+        if not self.entity_exists(identity):
+            raise FileNotFoundError(f"Run not found: {identity}")
+        
+        other_data_json = json.dumps(data)
+        self.execute(
+            f"UPDATE {self.table_name} SET other_data=:other_data, updated_at=:updated_at WHERE {self._build_identity_placeholders(identity)}",
+            {
+                "other_data": other_data_json,
+                "updated_at": self._get_local_iso_timestamp(),
+                **identity.as_kwargs()
+            },
         )
 
     def upsert_run(
