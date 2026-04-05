@@ -559,3 +559,14 @@ class PodSSHOperator:
         except Exception as exc:
             raise CommandError(error_prefix) from exc
         
+
+    def git_pull(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
+        """Run `git pull` in the specified directory on the remote pod."""
+        error_prefix = f"Failed to run git pull on pod {conn.pod_id}"
+        try:
+            repo_dir_quoted = shlex.quote(spec.repo_dir)
+            cmd = f"cd {repo_dir_quoted} && git pull"
+            logger.info("[git] Running git pull in %s", spec.repo_dir)
+            self.ssh.run_command(conn, cmd)
+        except Exception as exc:
+            raise CommandError(error_prefix) from exc

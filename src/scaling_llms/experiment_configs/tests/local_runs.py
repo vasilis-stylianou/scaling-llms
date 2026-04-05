@@ -48,29 +48,29 @@ RUNS = [
     #     "ckpt_filename": "best.pt",
     # },
     
-    # START FROM CHECKPOINT
-    {
-        "run_name": "test_start_from_checkpoint",
-        "method": "start_from_checkpoint",
-        "overwrite": True,
-        "dataset_kwargs": {
-            "dataset_name": "super_glue",
-            "dataset_config": "cb",
-            "train_split": "train[1%:2%]",
-            "eval_split": "test[:1%]",
-            "tokenizer_name": "gpt2_tiktoken",
-            "text_field": "premise",
-        },
-        "dataloader_kwargs": {
-            "seq_len": 16,
-            "train_batch_size": 2,
-            "eval_batch_size": 2,
-            "start_sample_idx": 0,
-            "seed": 1,
-        },
-        "ckpt_exp_name": EXPERIMENT_NAME,
-        "ckpt_run_name": "test_start",
-        "ckpt_filename": "best.pt",
-        "max_steps": 1,
-    }
+    # # START FROM CHECKPOINT
+    # {
+    #     "run_name": "test_start_from_checkpoint",
+    #     "method": "start_from_checkpoint",
+    #     "overwrite": True,
+    #     "dataset_kwargs": {
+    #         "dataset_name": "super_glue",
+    #         "dataset_config": "cb",
+    #         "train_split": "train[1%:2%]",
+    #         "eval_split": "test[:1%]",
+    #         "tokenizer_name": "gpt2_tiktoken",
+    #         "text_field": "premise",
+    #     },
+    #     "dataloader_kwargs": {
+    #         "seq_len": 16,
+    #         "train_batch_size": 2,
+    #         "eval_batch_size": 2,
+    #         "start_sample_idx": 0,
+    #         "seed": 1,
+    #     },
+    #     "ckpt_exp_name": EXPERIMENT_NAME,
+    #     "ckpt_run_name": "test_start",
+    #     "ckpt_filename": "best.pt",
+    #     "max_steps": 1,
+    # }
 ]

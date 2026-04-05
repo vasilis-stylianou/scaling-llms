@@ -593,6 +593,7 @@ def get_dataloaders(
             artifacts_dir = dataset_registry.get_dataset_artifacts(
                 dataset_id,
                 raise_if_not_found=True,
+                pull=True,  # ensure we have the latest artifacts locally
             )
         else:
             logger.log_tokenization(
@@ -611,7 +612,10 @@ def get_dataloaders(
 
     if is_distributed() and (not _is_main):
         artifacts_dir = dataset_registry.get_dataset_artifacts(
-            dataset_id, raise_if_not_found=True
+            dataset_id, 
+            raise_if_not_found=True, 
+            pull=False  
+            # avoid redundant pull in non-main ranks; main rank already pulled during preparation
         )
 
     # Load dataset info from Data Registry

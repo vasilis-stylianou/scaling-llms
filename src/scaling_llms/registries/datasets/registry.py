@@ -45,7 +45,8 @@ class DatasetRegistry:
     def get_dataset_artifacts(
         self, 
         identity: DatasetIdentity, 
-        raise_if_not_found: bool = True
+        raise_if_not_found: bool = True,
+        pull: bool = True,
     ) -> DatasetArtifactsDir | None:
         # Get Metadata for the dataset
         dataset_metadata = self.get_dataset_metadata(identity, raise_if_not_found=raise_if_not_found)
@@ -58,7 +59,7 @@ class DatasetRegistry:
                 raise FileNotFoundError(f"Dataset metadata for identity {identity} does not contain artifacts_path")
             return None
         
-        artifacts_dir = self.artifacts.get_dir(artifacts_path) # this will also pull/sync artifacts if needed
+        artifacts_dir = self.artifacts.get_dir(artifacts_path, pull=pull) # this will also pull/sync artifacts if needed
         if not artifacts_dir.exists():
             if raise_if_not_found:
                 raise FileNotFoundError(f"Dataset artifacts not found at path: {artifacts_path} for identity: {identity}")

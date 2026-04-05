@@ -110,9 +110,11 @@ class RunArtifacts(Artifacts):
         relative_path: str | Path, 
         *,
         raise_if_not_found: bool = True,
+        pull: bool = True,
     ) -> RunArtifactsDir | None:
         artifacts_dir = RunArtifactsDir(self.get_absolute_path(relative_path))
-        self.pull_dir(artifacts_dir)
+        if pull:
+            self.pull_dir(artifacts_dir)
 
         if not self._ensure_exists(artifacts_dir, raise_if_not_found=raise_if_not_found):
             return None

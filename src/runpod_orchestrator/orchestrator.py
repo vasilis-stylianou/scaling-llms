@@ -14,6 +14,7 @@ from runpod_orchestrator.services import (
 
 setup_console_logging()
 
+
 class PodOrchestrator(PodSSHOperator, PodManager):
     """
     Top-level API for pod lifecycle orchestration.
@@ -26,6 +27,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
       - resume    : resume a stopped pod
       - terminate : terminate (delete) a pod
       - run       : full create -> provision -> submit workflow
+      - git_pull   : convenience method to git pull on the pod
     """
 
     def __init__(self, config: PodOrchestratorConfig) -> None:
@@ -35,7 +37,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         self.command_spec = config.command_spec
         self.identity_file = config.identity_file
         self.workflow = config.workflow
-        
+
         ssh = SSHClient(config.identity_file)
 
         PodSSHOperator.__init__(self, ssh_client=ssh)
@@ -64,9 +66,9 @@ class PodOrchestrator(PodSSHOperator, PodManager):
             raise
 
     def provision(
-        self, 
-        conn: PodConnectionInfo | None = None, 
-        spec: ProvisioningSpec | None = None
+        self,
+        conn: PodConnectionInfo | None = None,
+        spec: ProvisioningSpec | None = None,
     ) -> None:
         conn = conn or self.conn
         spec = spec or self.provisioning_spec
@@ -75,20 +77,21 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         self.copy_env_file(conn, spec)
         self.poetry_install(conn, spec)
         self.install_tmux(conn)
-        
+
         # self.create_jupyter_kernel(conn, spec)
-        
+
     def validate_provisioning(
-        self, 
-        conn: PodConnectionInfo | None = None, 
-        spec: ProvisioningSpec | None = None
+        self,
+        conn: PodConnectionInfo | None = None,
+        spec: ProvisioningSpec | None = None,
     ) -> None:
         conn = conn or self.conn
         spec = spec or self.provisioning_spec
         self._validate_provisioning(conn, spec)
-        
-        
-    def submit_job(self, conn: PodConnectionInfo | None = None, spec: CommandSpec | None = None) -> str:
+
+    def submit_job(
+        self, conn: PodConnectionInfo | None = None, spec: CommandSpec | None = None
+    ) -> str:
         conn = conn or self.conn
         spec = spec or self.command_spec
         return self.launch_tmux_job(conn, spec)
@@ -97,9 +100,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         pod_id = pod_id or (self.conn.pod_id if self.conn else None)
         if pod_id is None:
             raise ValueError("No pod_id provided and no active connection available.")
-        self.stop_pod(
-            pod_id, retry_policy=self.workflow.retry_policy
-        )
+        self.stop_pod(pod_id, retry_policy=self.workflow.retry_policy)
 
     def resume(self, pod_id: str | None = None) -> PodConnectionInfo:
         pod_id = pod_id or (self.conn.pod_id if self.conn else None)
@@ -117,9 +118,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         pod_id = pod_id or (self.conn.pod_id if self.conn else None)
         if pod_id is None:
             raise ValueError("No pod_id provided and no active connection available.")
-        self.terminate_pod(
-            pod_id, retry_policy=self.workflow.retry_policy
-        )
+        self.terminate_pod(pod_id, retry_policy=self.workflow.retry_policy)
 
     def run(self) -> PodConnectionInfo:
         try:
@@ -137,9 +136,20 @@ class PodOrchestrator(PodSSHOperator, PodManager):
             raise
 
     # -- convenience --
+    def ssh_git_pull(
+        self,
+        conn: PodConnectionInfo | None = None,
+        spec: ProvisioningSpec | None = None,
+    ) -> None:
+        conn = conn or self.conn
+        spec = spec or self.provisioning_spec
+        if conn is None:
+            raise ValueError("No active connection available.")
+        self.git_pull(conn, spec)
+
     def set_ssh_client(self) -> None:
         self.ssh = SSHClient(self.identity_file)
-    
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> PodOrchestrator:
         config = PodOrchestratorConfig.from_yaml(path)

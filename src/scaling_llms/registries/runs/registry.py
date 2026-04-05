@@ -79,7 +79,8 @@ class RunRegistry:
     def get_run_artifacts(
         self, 
         identity: RunIdentity, 
-        raise_if_not_found: bool = True
+        raise_if_not_found: bool = True,
+        pull: bool = True,
     ) -> RunArtifacts | None:
         # Get Metadata for the run
         run_metadata = self.get_run_metadata(identity, raise_if_not_found=raise_if_not_found)
@@ -92,7 +93,11 @@ class RunRegistry:
                 raise FileNotFoundError(f"Run metadata for identity {identity} does not contain artifacts_path")
             return None
         
-        artifacts_dir = self.artifacts.get_dir(artifacts_path, raise_if_not_found=False) # this will also pull/sync artifacts if needed
+        artifacts_dir = self.artifacts.get_dir(
+            artifacts_path, 
+            raise_if_not_found=False,
+            pull=pull  # this will also pull/sync artifacts if needed
+        ) 
         if not artifacts_dir.exists():
             if raise_if_not_found:
                 raise FileNotFoundError(f"Run artifacts not found at path: {artifacts_path} for identity: {identity}")
@@ -103,11 +108,12 @@ class RunRegistry:
     def get_run( 
         self, 
         identity: RunIdentity, 
-        raise_if_not_found: bool = True
+        raise_if_not_found: bool = True,
+        pull: bool = True,
     ) -> Run:
         from scaling_llms.tracking import Run
 
-        artifacts_dir = self.get_run_artifacts(identity, raise_if_not_found=raise_if_not_found)
+        artifacts_dir = self.get_run_artifacts(identity, raise_if_not_found=raise_if_not_found, pull=pull)
         
         return Run(artifacts_dir)
     

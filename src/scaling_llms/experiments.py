@@ -196,6 +196,7 @@ def init_trainer(
     gpt_hparams: dict[str, Any],
     run: Run | None = None,
 ) -> Trainer:
+    # NOTE: in DDP only rank 0 prepares 
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
@@ -573,7 +574,7 @@ class ExperimentRunner:
                 )
                 self._main_process_train(identity, trainer, max_steps)
         else:
-            run = self.run_registry.get_run(identity)
+            run = self.run_registry.get_run(identity, pull=False) # non-main processes skip pulling artifacts since main process will handle all artifact syncing
             trainer = build_trainer_from_checkpoint(
                     ckpt_run=run,
                     dataset_registry=self.dataset_registry,
@@ -611,7 +612,7 @@ class ExperimentRunner:
             return None
         
         # Validate checkpoint compatibility 
-        ckpt_run = self.run_registry.get_run(RunIdentity(ckpt_exp_name, ckpt_run_name))
+        ckpt_run = self.run_registry.get_run(RunIdentity(ckpt_exp_name, ckpt_run_name), pull=_is_main) # only pull checkpoint artifacts if main process; non-main processes skip pulling since main process will handle all artifact syncing
         if _is_main:
             validate_checkpoint_compatibility(
                 ckpt_run=ckpt_run,
