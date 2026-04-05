@@ -36,17 +36,28 @@ def barrier_if_distributed() -> None:
         dist.barrier()
 
 
-def ddp_setup(backend: str = "nccl") -> None:
+def ddp_setup(backend: str) -> None:
     """Initialise the process group when launched by torchrun."""
     if not dist.is_available():
         return
-    # torchrun sets RANK; if absent we are not in a DDP launch
     if "RANK" not in os.environ:
         return
     if dist.is_initialized():
         return
-    dist.init_process_group(backend=backend)
-    torch.cuda.set_device(get_local_rank())
+
+    dist.init_process_group(backend=backend, init_method="env://")
+
+    if backend == "nccl" and torch.cuda.is_available():
+        torch.cuda.set_device(get_local_rank())
+    # if not dist.is_available():
+    #     return
+    # # torchrun sets RANK; if absent we are not in a DDP launch
+    # if "RANK" not in os.environ:
+    #     return
+    # if dist.is_initialized():
+    #     return
+    # dist.init_process_group(backend=backend)
+    # torch.cuda.set_device(get_local_rank())
 
 
 def ddp_cleanup() -> None:

@@ -213,6 +213,7 @@ class TrainerLogger(BaseLogger):
         vocab_size: str,
         device: str,
         device_name: str,
+        world_size: int,
         precision: str,
         max_num_steps: int,
         remaining_steps: int,
@@ -232,8 +233,8 @@ class TrainerLogger(BaseLogger):
             model_params, n_layer, n_embd, vocab_size
         )
         self.info(
-            "[device] device=%s | device_name=%s | precision=%s", 
-            device, device_name, precision
+            "[device] device=%s | device_name=%s | world_size=%d | precision=%s", 
+            device, device_name, world_size, precision
         )
         self.info(
             "[optimization] max_num_steps=%d | remaining_steps=%d | accum_steps=%d | lr=%.3e | warmup_steps=%d | lr_schedule=%s",

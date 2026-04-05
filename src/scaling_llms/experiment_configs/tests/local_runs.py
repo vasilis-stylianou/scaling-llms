@@ -40,13 +40,13 @@ RUNS = [
         "max_steps": 1,
     },
 
-    # RESUME
-    {
-        "method": "resume",
-        "run_name": "test_start",
-        "max_steps": 2,
-        "ckpt_filename": "best.pt",
-    },
+    # # RESUME
+    # {
+    #     "method": "resume",
+    #     "run_name": "test_start",
+    #     "max_steps": 2,
+    #     "ckpt_filename": "best.pt",
+    # },
     
     # START FROM CHECKPOINT
     {

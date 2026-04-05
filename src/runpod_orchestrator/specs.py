@@ -36,6 +36,7 @@ class PodSpec:
     image_name: str
     gpu_type_id: str | None = None
     cpu_type_id: str | None = None
+    gpu_count: int = 1
     cloud_type: str = "SECURE"
     container_disk_in_gb: int = 20
     volume_in_gb: int = 40
@@ -62,6 +63,7 @@ class PodSpec:
             "image_name": self.image_name.strip(),
             "instance_id": self.cpu_type_id,
             "gpu_type_id": self.gpu_type_id,
+            "gpu_count": self.gpu_count,
             "cloud_type": self.cloud_type,
             "container_disk_in_gb": self.container_disk_in_gb,
             "volume_in_gb": self.volume_in_gb,

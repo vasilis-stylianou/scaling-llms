@@ -257,6 +257,7 @@ class Trainer:
                 vocab_size=f"{self.raw_model.cfg.vocab_size:,}",
                 device=self.device,
                 device_name=self.cfg.device_name,
+                world_size=self._world_size,
                 precision=self.cfg.precision,
                 max_num_steps=target_total,
                 remaining_steps=remaining_steps,

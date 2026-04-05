@@ -63,6 +63,7 @@ class PodOrchestratorConfig:
                 image_name=str(pod_data["image_name"]),
                 gpu_type_id=str(pod_data["gpu_type_id"]) if "gpu_type_id" in pod_data else None,
                 cpu_type_id=str(pod_data["cpu_type_id"]) if "cpu_type_id" in pod_data else None,
+                gpu_count=int(pod_data.get("gpu_count", 1)),
                 cloud_type=str(pod_data.get("cloud_type", "SECURE")),
                 container_disk_in_gb=int(pod_data.get("container_disk_in_gb", 15)),
                 volume_in_gb=int(pod_data.get("volume_in_gb", 20)),

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 import shutil
 
+from torch import dist
 import yaml
 from dotenv import load_dotenv
 
@@ -168,8 +170,18 @@ def run_experiments(
 def main() -> None:
     args = _parse_args()
 
+    print("before init_process_group", flush=True)
+
     # Initialise DDP process group when launched via torchrun (no-op otherwise)
     ddp_setup(backend=args.backend)
+
+    print("after init_process_group", flush=True)
+    print(
+        f"rank={dist.get_rank()} world_size={dist.get_world_size()} "
+        f"local_rank={os.environ.get('LOCAL_RANK')} "
+        f"master={os.environ.get('MASTER_ADDR')}:{os.environ.get('MASTER_PORT')}",
+        flush=True,
+    )
 
     try:
         # Load config from YAML and validate
