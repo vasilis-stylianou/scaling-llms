@@ -8,8 +8,8 @@ pod_spec:
   gpu_count: 2
   cpu_type_id: # cpu5g-4-16
   cloud_type: SECURE
-  container_disk_in_gb: 20
-  volume_in_gb: 40
+  container_disk_in_gb: 40
+  volume_in_gb: 80
   ports: "22/tcp"
   env:
     DATABASE_URL: ${DATABASE_URL}

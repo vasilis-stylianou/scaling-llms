@@ -10,9 +10,9 @@ from scaling_llms.experiment_configs.wikitext_103_ablations.constants import (
 # TRAINER CONFIGS
 # -------------------------
 _1D_SCREENING_TRAINER_KWARGS = dict(
-    num_steps=455,
+    num_steps=100,
     weight_decay=0.1,
-    accum_steps=8,
+    accum_steps=4,
     grad_clip_norm=1.0,
     iter_mode="infinite",
     lr_schedule="cosine",
