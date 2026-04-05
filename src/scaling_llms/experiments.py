@@ -534,9 +534,11 @@ class ExperimentRunner:
                     gpt_hparams=gpt_hparams,
                     run=run,
                 )
+                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
             # Distributed worker processes skip run creation and directly init trainer and train.
+            barrier_if_distributed()
             trainer = init_trainer(
                 dataset_registry=self.dataset_registry,
                 dataset_id=dataset_id,
@@ -571,8 +573,11 @@ class ExperimentRunner:
                     reset_state=False,
                     active_run=run,
                 )
+
+                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
+            barrier_if_distributed()
             run = self.run_registry.get_run(identity)
             trainer = build_trainer_from_checkpoint(
                     ckpt_run=run,
@@ -612,11 +617,14 @@ class ExperimentRunner:
         
         # Validate checkpoint compatibility 
         ckpt_run = self.run_registry.get_run(RunIdentity(ckpt_exp_name, ckpt_run_name))
-        validate_checkpoint_compatibility(
-            ckpt_run=ckpt_run,
-            target_seq_len=dataloader_kwargs["seq_len"],
-            target_vocab_size=get_vocab_size(dataset_kwargs["tokenizer_name"]),
-        )
+        if _is_main:
+            validate_checkpoint_compatibility(
+                ckpt_run=ckpt_run,
+                target_seq_len=dataloader_kwargs["seq_len"],
+                target_vocab_size=get_vocab_size(dataset_kwargs["tokenizer_name"]),
+            )
+        
+        barrier_if_distributed()
         
         # Load model weights from checkpoint, init trainer, and train. 
         # Only main process manages the run; other processes just init trainer and train.
@@ -646,8 +654,10 @@ class ExperimentRunner:
                     dataloader_kwargs=dataloader_kwargs,
                     active_run=run,
                 )
+                barrier_if_distributed()
                 self._main_process_train(identity, trainer, max_steps)
         else:
+            barrier_if_distributed()
             trainer = build_trainer_from_checkpoint_transfer(
                 ckpt_run=ckpt_run,
                 ckpt_filename=ckpt_filename,
