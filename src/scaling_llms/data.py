@@ -516,6 +516,10 @@ def make_dataloaders(
 
     # STEP 3: Create PyTorch dataloaders
     dl_kwargs = dataloader_config.get_performance_kwargs()
+    dl_kwargs["shuffle"] = False  
+    # NOTE: shuffle must stay False when sampler is provided 
+    # and windows are already deterministic/randomized
+
     train_dl = DataLoader(
         train_ds,
         batch_size=dataloader_config.train_batch_size,

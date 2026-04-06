@@ -416,7 +416,7 @@ class GPTModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None, loss_reduction="mean") -> GPTOutput:
+    def forward(self, idx, targets=None, loss_reduction="sum") -> GPTOutput:
         B, T = idx.size()
 
         assert T <= self.cfg.seq_len, (
