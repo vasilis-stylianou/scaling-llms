@@ -500,7 +500,7 @@ class ExperimentRunner:
             other_data["train_global_batch_size"] = (
                 trainer.cfg.accum_steps 
                 * trainer.train_dl.batch_size
-                * trainer.cfg.world_size
+                * other_data["world_size"]
             )
 
         barrier_if_distributed()
