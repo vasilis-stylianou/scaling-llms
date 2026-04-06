@@ -372,7 +372,8 @@ class Trainer:
 
             out = self.model(idx, targets, loss_reduction="sum")
             total_loss += out.loss.detach().to(torch.float64)
-            total_tokens += targets.numel()
+            total_tokens += targets.numel() 
+            # NOTE: assumes all tokens are valid, i.e. no padding tokens that should be ignored
 
         apply_all_reduce_if_distributed(total_loss)
         apply_all_reduce_if_distributed(total_tokens)

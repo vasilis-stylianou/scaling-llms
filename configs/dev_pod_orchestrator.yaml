@@ -5,7 +5,7 @@ pod_spec:
   name: dev-pod-orchestrator
   image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   gpu_type_id: NVIDIA A100-SXM4-80GB
-  gpu_count: 2
+  gpu_count: 1
   cpu_type_id: # cpu5g-4-16
   cloud_type: SECURE
   container_disk_in_gb: 40
@@ -37,8 +37,8 @@ command_spec:
   work_dir: /workspace/repos/scaling-llms
   tmux_session_name: dev_pod_orchestrator_session
   log_path: /workspace/tmux_logs/dev_pod_orchestrator_session.log
-  # command: poetry run python scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml
-  command: poetry run python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=2 scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml --backend nccl
+  command: poetry run python scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml
+  # command: poetry run python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=2 scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml --backend nccl
   upload_files:
     - local: /Users/vasilis/Desktop/scaling-llms/configs/dev_run_experiments.yaml
       remote: /workspace/runtime_configs/run_experiments.yaml

@@ -12,7 +12,7 @@ import numpy as np
 import tiktoken
 import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from scaling_llms.constants import (
     DATASET_FILES,
@@ -315,6 +315,32 @@ class SequentialTokenChunks(Dataset):
         return torch.from_numpy(x), torch.from_numpy(y)
 
 
+class DistributedEvalSampler(Sampler[int]):
+    """
+    Shards a fixed eval dataset across DDP ranks using strided indexing.
+    No padding, no dropped samples — every real index appears on exactly one rank.
+
+    Rank r of world size W sees indices r, W+r, 2W+r, … up to the dataset length.
+
+    e.g. with 3 ranks and 10 samples, the indices would be:
+    - Rank 0: 0, 3, 6, 9    
+    - Rank 1: 1, 4, 7
+    - Rank 2: 2, 5, 8
+    """
+    def __init__(self, dataset_len: int, rank: int, world_size: int) -> None:
+        self.dataset_len = dataset_len
+        self.rank = rank
+        self.world_size = world_size
+
+    def __iter__(self):
+        yield from range(self.rank, self.dataset_len, self.world_size)
+
+    def __len__(self) -> int:
+        if self.rank >= self.dataset_len:
+            return 0
+        return (self.dataset_len - self.rank + self.world_size - 1) // self.world_size
+
+
 # ============================================================
 # TOKENIZED DATASET FACTORY
 # ============================================================
@@ -438,7 +464,6 @@ class DataLoaderConfig(BaseJsonConfig):
         """
         uses_workers = self.num_workers > 0
         return dict(
-            shuffle=False, # must stay False when sampler is provided and windows are already deterministic/randomized
             num_workers=self.num_workers,
             pin_memory=self.pin_memory and uses_workers,
             drop_last=self.drop_last,
@@ -487,13 +512,7 @@ def make_dataloaders(
 
     eval_sampler = None
     if is_distributed():
-        eval_sampler = DistributedSampler(
-            eval_ds,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=False,
-            drop_last=False,
-        )
+        eval_sampler = DistributedEvalSampler(len(eval_ds), rank, world_size)
 
     # STEP 3: Create PyTorch dataloaders
     dl_kwargs = dataloader_config.get_performance_kwargs()
