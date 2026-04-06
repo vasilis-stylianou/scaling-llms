@@ -50,8 +50,12 @@ class PodSpec:
         if not self.image_name.strip():
             raise ValueError("PodSpec.image_name must be non-empty")
 
-        if self.gpu_type_id is None and self.cpu_type_id is None:
-            raise ValueError("Need to specify at least one of cpu_type_id or gpu_type_id")
+        if (self.gpu_type_id is None) == (self.cpu_type_id is None):
+            raise ValueError("Specify exactly one of gpu_type_id or cpu_type_id")
+        if self.cpu_type_id is not None and self.gpu_count > 0:
+            raise ValueError("cpu_type_id cannot be combined with gpu_count > 0")
+        if self.gpu_type_id is not None and self.gpu_count == 0:
+            raise ValueError("gpu_type_id requires gpu_count > 0")
 
         if not self.ports.strip():
             raise ValueError("PodSpec.ports must be non-empty")
@@ -76,9 +80,9 @@ class PodSpec:
 class ProvisioningSpec:
     repo_dir: str
     repo_url: str
-    repo_branch: str | None = None
+    repo_branch: str | None = "main"
     rclone_config_local: str | None = None
-    rclone_config_remote: str = "/root/.config/rclone/rclone.conf"
+    rclone_config_remote: str | None = None
     create_jupyter_kernel: bool = False
     kernel_name: str = "scaling-llms"
     kernel_display_name: str = "Python (scaling-llms)"
@@ -89,11 +93,11 @@ class ProvisioningSpec:
 
 @dataclass(frozen=True)
 class CommandSpec:
+    # Derived / built by config — consumed as-is by PodSSHOperator.
+    command: str
     work_dir: str
     tmux_session_name: str
     log_path: str
-    command: str
-    gpu_count: int = 1
     stop_pod_at_success: bool = False
     stop_pod_at_failure: bool = False
     upload_files: tuple[tuple[str, str], ...] = ()  # [(local_path, remote_path)]
@@ -101,10 +105,8 @@ class CommandSpec:
 
 @dataclass(frozen=True)
 class WorkflowOptions:
-    reuse_if_exists: bool = True
+    reuse_if_exists: bool = False
     timeout_s: int = 900
     poll_s: int = 5
-    terminate_after_launch: bool = False
     terminate_on_failure: bool = False
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
-

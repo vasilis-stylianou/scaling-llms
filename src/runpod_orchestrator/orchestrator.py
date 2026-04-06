@@ -126,9 +126,6 @@ class PodOrchestrator(PodSSHOperator, PodManager):
             self.provision(self.conn)
             self.submit_job(self.conn)
 
-            if self.workflow.terminate_after_launch:
-                self.terminate(self.conn.pod_id)
-
             return self.conn
         except Exception:
             if self.conn is not None and self.workflow.terminate_on_failure:

@@ -6,7 +6,7 @@ import json
 import pandas as pd
 from typing import Any
 
-
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -468,31 +468,50 @@ class ExperimentRunner:
         self.run_registry = run_registry
         self.dataset_registry = dataset_registry
 
-    def _main_process_train(
+    # --- PRIVATE METHODS ---
+    @contextmanager
+    def _managed_run(self, identity: RunIdentity, **kwargs):
+        """
+        On main process: enters run_registry.managed_run and yields the Run.
+        On worker processes: yields None with no context overhead.
+        """
+        if is_main_process():
+            with self.run_registry.managed_run(identity, **kwargs) as run:
+                yield run
+        else:
+            yield None
+
+    def _train(
         self, 
         identity: RunIdentity, 
         trainer: Trainer, 
-        max_steps: int | None
+        max_steps: int | None,
     ) -> None:
-        self.run_registry.set_device_name(identity, trainer.cfg.device_name)
-                
-        other_data = trainer.get_runtime_info()
-        other_data.update({f"start_{k}": v for k, v in trainer.state_dict().items()})
-        other_data["max_steps"] = max_steps
-        other_data["num_steps"] = trainer.cfg.num_steps
+        _is_main = is_main_process()
+        if _is_main:
+            self.run_registry.set_device_name(identity, trainer.cfg.device_name)
+
+            other_data = trainer.get_runtime_info()
+            other_data.update({f"start_{k}": v for k, v in trainer.state_dict().items()})
+            other_data["max_steps"] = max_steps
+            other_data["num_steps"] = trainer.cfg.num_steps
+            other_data["accum_steps"] = trainer.cfg.accum_steps
+            other_data["train_micro_batch_size"] = trainer.train_dl.batch_size
+            other_data["train_global_batch_size"] = (
+                trainer.cfg.accum_steps 
+                * trainer.train_dl.batch_size
+                * trainer.cfg.world_size
+            )
 
         barrier_if_distributed()
         trainer.train(max_steps=max_steps)
         barrier_if_distributed()
 
-        other_data.update({f"end_{k}": v for k, v in trainer.state_dict().items()})
-        self.run_registry.set_other_data(identity, other_data)
+        if _is_main:
+            other_data.update({f"end_{k}": v for k, v in trainer.state_dict().items()})
+            self.run_registry.set_other_data(identity, other_data)
 
-    def _non_main_process_train(self, trainer: Trainer, max_steps: int | None) -> None:
-        barrier_if_distributed()
-        trainer.train(max_steps=max_steps)
-        barrier_if_distributed()
-
+    # --- PUBLIC METHODS ---
     def start(
         self,
         run_name: str,
@@ -506,11 +525,9 @@ class ExperimentRunner:
         ignore_if_run_exists: bool = False,
     ) -> Trainer | None:
 
-        _is_main = is_main_process()
-
         identity = RunIdentity(self.exp_name, run_name)
         if ignore_if_run_exists and self.run_registry.run_exists(identity):
-            if _is_main:
+            if is_main_process():
                 print(
                     f"Run {self.exp_name}/{run_name} already exists, "
                     "but ignore_if_run_exists=True, so ignoring and proceeding."
@@ -521,33 +538,21 @@ class ExperimentRunner:
         dl_cfg = DataLoaderConfig(**dataloader_kwargs)
         trainer_cfg = TrainerConfig(**trainer_kwargs)
 
-        if _is_main:
-            with self.run_registry.managed_run(
-                identity,
-                resume=False,
-                overwrite=overwrite,
-            ) as run:
-                trainer = init_trainer(
-                    dataset_registry=self.dataset_registry,
-                    dataset_id=dataset_id,
-                    dl_cfg=dl_cfg,
-                    trainer_cfg=trainer_cfg,
-                    gpt_hparams=gpt_hparams,
-                    run=run,
-                )
-                self._main_process_train(identity, trainer, max_steps)
-        else:
-            # Distributed worker processes skip run creation and directly init trainer and train.
+        with self._managed_run(
+            identity,
+            resume=False,
+            overwrite=overwrite,
+        ) as run:
             trainer = init_trainer(
                 dataset_registry=self.dataset_registry,
                 dataset_id=dataset_id,
                 dl_cfg=dl_cfg,
                 trainer_cfg=trainer_cfg,
                 gpt_hparams=gpt_hparams,
-                run=None, # pass None since only main process creates the run
+                run=run, # for rank >0 pass None since only main process creates the run
             )
-
-            self._non_main_process_train(trainer, max_steps)
+            
+            self._train(identity, trainer, max_steps)
 
         return trainer
 
@@ -559,30 +564,26 @@ class ExperimentRunner:
         max_steps: int | None = None,
     ) -> Trainer:
         identity = RunIdentity(self.exp_name, run_name)
-        if is_main_process():
-            with self.run_registry.managed_run(
-                identity,
-                resume=True,
-                overwrite=False,
-            ) as run:
-                trainer = build_trainer_from_checkpoint(
-                    ckpt_run=run,
-                    dataset_registry=self.dataset_registry,
-                    ckpt_filename=ckpt_filename,
-                    reset_state=False,
-                    active_run=run,
-                )
-                self._main_process_train(identity, trainer, max_steps)
-        else:
-            run = self.run_registry.get_run(identity, pull=False) # non-main processes skip pulling artifacts since main process will handle all artifact syncing
+        with self._managed_run(
+            identity,
+            resume=True,
+            overwrite=False,
+        ) as active_run:
+            ckpt_run = (
+                active_run
+                if is_main_process()
+                else self.run_registry.get_run(identity, pull=False)
+                # NOTE: non-main processes skip pulling artifacts 
+                # since main process will handle all artifact syncing
+            )
             trainer = build_trainer_from_checkpoint(
-                    ckpt_run=run,
-                    dataset_registry=self.dataset_registry,
-                    ckpt_filename=ckpt_filename,
-                    reset_state=False,
-                    active_run=None, # pass None since only main process manages the run
-                )
-            self._non_main_process_train(trainer, max_steps)
+                ckpt_run=ckpt_run,
+                dataset_registry=self.dataset_registry,
+                ckpt_filename=ckpt_filename,
+                reset_state=False,
+                active_run=active_run,
+            )
+            self._train(identity, trainer, max_steps)
 
         return trainer
 
@@ -612,7 +613,12 @@ class ExperimentRunner:
             return None
         
         # Validate checkpoint compatibility 
-        ckpt_run = self.run_registry.get_run(RunIdentity(ckpt_exp_name, ckpt_run_name), pull=_is_main) # only pull checkpoint artifacts if main process; non-main processes skip pulling since main process will handle all artifact syncing
+        ckpt_run = self.run_registry.get_run(
+            RunIdentity(ckpt_exp_name, ckpt_run_name), 
+            pull=_is_main
+            # NOTE: non-main processes skip pulling artifacts 
+            # since main process will handle all artifact syncing
+        ) 
         if _is_main:
             validate_checkpoint_compatibility(
                 ckpt_run=ckpt_run,
@@ -624,13 +630,13 @@ class ExperimentRunner:
         
         # Load model weights from checkpoint, init trainer, and train. 
         # Only main process manages the run; other processes just init trainer and train.
-        if _is_main:
-            with self.run_registry.managed_run(
-                identity,
-                resume=False,
-                overwrite=overwrite,
-            ) as run:
-                run.log_metadata(
+        with self._managed_run(
+            identity,
+            resume=False,
+            overwrite=overwrite,
+        ) as active_run:
+            if active_run is not None: # active_run is None on non-main processes
+                active_run.log_metadata(
                     {
                         "initialized_from": {
                             "exp": ckpt_exp_name,
@@ -642,28 +648,19 @@ class ExperimentRunner:
                     format="json",
                 )
 
-                trainer = build_trainer_from_checkpoint_transfer(
-                    ckpt_run=ckpt_run,
-                    ckpt_filename=ckpt_filename,
-                    dataset_registry=self.dataset_registry,
-                    dataset_kwargs=dataset_kwargs,
-                    dataloader_kwargs=dataloader_kwargs,
-                    active_run=run,
-                )
-                self._main_process_train(identity, trainer, max_steps)
-        else:
             trainer = build_trainer_from_checkpoint_transfer(
                 ckpt_run=ckpt_run,
                 ckpt_filename=ckpt_filename,
                 dataset_registry=self.dataset_registry,
                 dataset_kwargs=dataset_kwargs,
                 dataloader_kwargs=dataloader_kwargs,
-                active_run=None, # pass None since only main process manages the run
+                active_run=active_run,
             )
-            self._non_main_process_train(trainer, max_steps)
+            self._train(identity, trainer, max_steps)
 
         return trainer
 
+    # --- MAIN ENTRYPOINT ---
     def run(self, config: RunConfig) -> Trainer | None:
 
         if config.method == RunMethod.START:

@@ -37,7 +37,6 @@ workflow:
   reuse_if_exists: false
   timeout_s: 120
   poll_s: 5
-  terminate_after_launch: false
   terminate_on_failure: false
   retry_policy:
     max_attempts: 5

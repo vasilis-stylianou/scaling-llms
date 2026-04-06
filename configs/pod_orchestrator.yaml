@@ -2,53 +2,46 @@ identity_file: ~/.ssh/runpod_key
 
 # Create Pod Args
 pod_spec:
-  name: wikitext-103-ablations-1d-screening
+  name: experiment-run
   image_name: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   gpu_type_id: NVIDIA A100-SXM4-80GB
+  gpu_count: 1
   cpu_type_id: # cpu5g-4-16
-  cloud_type: SECURE
   container_disk_in_gb: 40
   volume_in_gb: 80
-  ports: "22/tcp"
   env:
     DATABASE_URL: ${DATABASE_URL}
 
 provisioning:
   # copy_rclone_config
   rclone_config_local: ~/.config/rclone/rclone.conf
-  rclone_config_remote: /root/.config/rclone/rclone.conf
   # clone_or_update_repo
   repo_dir: /workspace/repos/scaling-llms
   repo_url: https://github.com/vasilis-stylianou/scaling-llms.git
-  repo_branch: main
   # copy_env_file
-  env_file_local: ~/Desktop/scaling-llms/.env 
-  env_file_remote: /workspace/repos/scaling-llms/.env
-  # --- Optional provisioning steps ---
-  # create_jupyter_kernel
-  create_jupyter_kernel: false
-  kernel_name: scaling-llms
-  kernel_display_name: "Python (scaling-llms)"
-  # poetry_install
-  poetry_install_args: []
+  env_file_local: ~/Desktop/scaling-llms/.env # no-op if the file doesn't exist, or is set to null/None/empty string
 
 command_spec:
-  work_dir: /workspace/repos/scaling-llms
-  tmux_session_name: wikitext_103_ablations_2d_screening_session
-  log_path: /workspace/tmux_logs/wikitext_103_ablations_2d_screening_session.log
-  command: poetry run python scripts/run_experiments.py /workspace/runtime_configs/run_experiments.yaml
-  upload_files:
-    - local: /Users/vasilis/Desktop/scaling-llms/configs/run_experiments.yaml
-      remote: /workspace/runtime_configs/run_experiments.yaml
-  stop_pod_at_success: true
+  # Script path relative to repo_dir (work_dir is always repo_dir)
+  script: scripts/run_experiments.py
+  # Local path to the runtime config to upload before launching.
+  # It will be placed at /workspace/runtime_configs/run_experiments.yaml on the pod.
+  runtime_config_local: /Users/vasilis/Desktop/scaling-llms/configs/dev_run_experiments.yaml
+  # runtime_config_remote: /workspace/runtime_configs/run_experiments.yaml  # default, override if needed
+  # The launch command is derived automatically from gpu_count:
+  #   gpu_count <= 1 → poetry run python <script> <runtime_config_remote>
+  #   gpu_count >  1 → poetry run python -m torch.distributed.run
+  #                        --standalone --nnodes=1 --nproc_per_node=N
+  #                        <script> <runtime_config_remote> --backend nccl
+  stop_pod_at_success: false
   stop_pod_at_failure: false
+  # tmux_session_name:  # default: derived from pod_spec.name
+  # log_path:  # default: /workspace/tmux_logs/<tmux_session_name>.log  
 
 workflow:
-  reuse_if_exists: false
   timeout_s: 120
   poll_s: 5
-  terminate_after_launch: false
-  terminate_on_failure: true
+  terminate_on_failure: false
   retry_policy:
     max_attempts: 5
     retry_base_s: 2.0
