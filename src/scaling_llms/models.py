@@ -195,7 +195,7 @@ class RotaryEmbedding(nn.Module):
 # -------------------------
 # ATTENTION
 # -------------------------
-class CausalSelfAttention(nn.Module):
+class CausalSelfAttentionCustom(nn.Module):
     
     def __init__(self, cfg):
         super().__init__()
@@ -272,6 +272,81 @@ class CausalSelfAttention(nn.Module):
         # Weighted Sum
         # (B, n_head, T, T) @ (B, n_head, T, d_head) -> (B, n_head, T, d_head)
         y = att @ v
+
+        # --- STEP 3: Reassemble ---
+        # 1. Transpose: Swap Head and Time back -> (B, T, n_head, d_head)
+        # 2. Contiguous: Fix memory layout
+        # 3. View: Merge H and d -> (B, T, D)
+        y = y.transpose(1, 2).contiguous().view(B, T, D)
+
+        # --- STEP 4: Output Projection ---
+        y = self.resid_dropout(self.c_proj(y))
+        
+        return y
+    
+class CausalSelfAttention(nn.Module):
+    
+    def __init__(self, cfg):
+        super().__init__()
+        
+        # Key variables
+        self.n_head = cfg.n_head
+        self.n_embd = cfg.n_embd
+        self.d_head = cfg.d_head
+        self.seq_len = cfg.seq_len
+        self.pos_encoding_type = cfg.pos_encoding_type
+        self.attn_bias = cfg.attn_bias
+        self.attn_pdrop = cfg.attn_pdrop
+
+        # 1. Fused QKV Projection
+        self.c_attn = nn.Linear(cfg.n_embd, 3 * cfg.n_embd, bias=self.attn_bias)
+
+        # 2. Output Projection
+        self.c_proj = nn.Linear(cfg.n_embd, cfg.n_embd, bias=self.attn_bias)
+
+        # 3. Regularization
+        self.resid_dropout = nn.Dropout(cfg.resid_pdrop)
+
+        # 4. Positional Encoding (if using RoPE)
+        if self.pos_encoding_type == "rotary":
+            self.rope = RotaryEmbedding(
+                dim=self.d_head,
+                max_seq_len=cfg.seq_len,
+                base=cfg.rope_theta,
+            )
+        else:
+            self.rope = None
+
+    def forward(self, x):
+        B, T, D = x.shape # (Batch, Seq_Len, Embedding/Model_Dim)
+
+        # --- STEP 1: Calculate Q, K, V ---
+        # Run the linear layer
+        # Shape: (B, T, 3 * D)
+        qkv = self.c_attn(x) 
+
+        # Reshape to isolate heads and QKV 
+        # We move the '3' to the front (dim 0) for easy unpacking
+        # Shape: (3, B, n_head, T, d_head)
+        qkv = qkv.view(B, T, 3, self.n_head, self.d_head).permute(2, 0, 3, 1, 4)
+
+        # Unpack: Results are now cleanly (B, n_head, T, d_head)
+        q, k, v = qkv.unbind(0)
+
+        # Optional RoPE application
+        if self.rope is not None:
+            q, k = self.rope(q, k)
+
+        # --- STEP 2: Attention Mechanism ---
+        # SDPA -> (B, n_head, T, d_head)
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=self.attn_pdrop if self.training else 0.0,
+            is_causal=True, # handles the causal mask for you
+        )
 
         # --- STEP 3: Reassemble ---
         # 1. Transpose: Swap Head and Time back -> (B, T, n_head, d_head)

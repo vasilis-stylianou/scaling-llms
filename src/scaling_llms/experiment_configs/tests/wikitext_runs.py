@@ -60,7 +60,7 @@ _SWIGLU_HPARAMS = dict(
 )
 
 _1D_RUNS = [
-    ("baseline_2gpu_compile", _BASELINE_HPARAMS),
+    ("baseline_2gpu_compile_sdpa", _BASELINE_HPARAMS),
     # ("rms_norm", _RMS_NORM_HPARAMS),
     # ("rotary", _ROTARY_HPARAMS),
     # ("swiglu", _SWIGLU_HPARAMS)
