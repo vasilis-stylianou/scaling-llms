@@ -3,16 +3,17 @@ identity_file: ~/.ssh/runpod_key
 # Create Pod Args
 pod_spec:
   name: test-custom-image
-  image_name: stylianouvasilis/scaling-llms:v3
+  image_name: stylianouvasilis/scaling-llms:v6
 # runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   gpu_type_id: # NVIDIA A100-SXM4-80GB
   gpu_count: 0
   cpu_type_id: cpu5g-4-16
-  container_disk_in_gb: 20
-  volume_in_gb: 20
+  container_disk_in_gb: 40
+  volume_in_gb: 40
   env:
     DATABASE_URL: ${DATABASE_URL}
     RUNPOD_PUBLIC_KEY: ${RUNPOD_PUBLIC_KEY}
+    RCLONE_CONF_B64: ${RCLONE_CONF_B64}
 
 provisioning:
   # copy_rclone_config
@@ -37,8 +38,8 @@ command_spec:
   #                        <script> <runtime_config_remote> --backend nccl
   stop_pod_at_success: false
   stop_pod_at_failure: false
-  # tmux_session_name:  # default: derived from pod_spec.name
-  # log_path:  # default: /workspace/tmux_logs/<tmux_session_name>.log  
+  # job_session_name:  # default: derived from pod_spec.name
+  # log_path:  # default: /workspace/command_logs/<job_session_name>.log  
 
 workflow:
   timeout_s: 600

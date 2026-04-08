@@ -161,8 +161,8 @@ class PodOrchestratorConfig:
             work_dir = provisioning.repo_dir
 
             # --- tmux session name: explicit override or derived from pod name ---
-            raw_session = command_data.get("tmux_session_name")
-            tmux_session_name = (
+            raw_session = command_data.get("job_session_name")
+            job_session_name = (
                 str(raw_session) if raw_session else _slugify(pod_spec.name)
             )
 
@@ -171,7 +171,7 @@ class PodOrchestratorConfig:
             log_path = (
                 str(raw_log)
                 if raw_log
-                else f"/workspace/tmux_logs/{tmux_session_name}.log"
+                else f"/workspace/command_logs/{job_session_name}.log"
             )
 
             # --- upload_files: built from runtime_config_local if provided ---
@@ -185,7 +185,7 @@ class PodOrchestratorConfig:
             command_spec = CommandSpec(
                 command=command,
                 work_dir=work_dir,
-                tmux_session_name=tmux_session_name,
+                job_session_name=job_session_name,
                 log_path=log_path,
                 stop_pod_at_success=bool(command_data.get("stop_pod_at_success", False)),
                 stop_pod_at_failure=bool(command_data.get("stop_pod_at_failure", False)),
@@ -195,7 +195,6 @@ class PodOrchestratorConfig:
             raise ConfigError(f"Missing command_spec field: {exc.args[0]}") from exc
 
         workflow = WorkflowOptions(
-            reuse_if_exists=bool(workflow_data.get("reuse_if_exists", False)),
             timeout_s=int(workflow_data.get("timeout_s", 900)),
             poll_s=int(workflow_data.get("poll_s", 5)),
             terminate_on_failure=bool(

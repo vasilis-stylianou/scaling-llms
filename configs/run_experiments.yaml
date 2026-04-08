@@ -9,7 +9,7 @@ registries:
     sync_hooks_type: rclone
     sync_hooks_args: 
       remote_rclone_name: r2
-      remote_artifacts_root: scaling-llms/dev/runs
+      remote_artifacts_root: scaling-llms/runs
       global_args: ["--s3-no-check-bucket"]
 
   datasets:
@@ -18,5 +18,5 @@ registries:
     sync_hooks_type: rclone
     sync_hooks_args:
       remote_rclone_name: r2
-      remote_artifacts_root: scaling-llms/dev/datasets
+      remote_artifacts_root: scaling-llms/datasets
       global_args: ["--s3-no-check-bucket"]

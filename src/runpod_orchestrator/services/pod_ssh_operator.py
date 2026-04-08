@@ -7,7 +7,7 @@ from string import Template
 
 from runpod_orchestrator.clients import SSHClient
 from runpod_orchestrator.exceptions import CommandError, ProvisioningError
-from runpod_orchestrator.specs import ProvisioningSpec, CommandSpec, PodConnectionInfo
+from runpod_orchestrator.specs import ProvisioningSpec, PodConnectionInfo
 
 
 logger = logging.getLogger("PodSSH")
@@ -15,12 +15,19 @@ logger = logging.getLogger("PodSSH")
 _TEMPLATE_PATH = Path("/Users/vasilis/Desktop/scaling-llms/scripts/tmux_job_template.sh")
 
 
-def _build_tmux_job_command(spec: CommandSpec) -> str:
-    command = spec.command.strip()
+def _build_tmux_job_command(
+    command: str,
+    work_dir: str,
+    job_session_name: str,
+    log_path: str,
+    stop_pod_at_success: bool = False,
+    stop_pod_at_failure: bool = False,
+) -> str:
+    command = command.strip()
     if not command:
-        raise ValueError("spec.command must be non-empty")
+        raise ValueError("command must be non-empty")
 
-    work_dir = spec.work_dir.strip()
+    work_dir = work_dir.strip()
     work_dir_block = (
         ""
         if not work_dir
@@ -34,12 +41,12 @@ def _build_tmux_job_command(spec: CommandSpec) -> str:
         )
     )
 
-    success_block = "  stop_current_pod" if spec.stop_pod_at_success else "  true"
-    failure_block = "  stop_current_pod || true" if spec.stop_pod_at_failure else "  true"
+    success_block = "  stop_current_pod" if stop_pod_at_success else "  true"
+    failure_block = "  stop_current_pod || true" if stop_pod_at_failure else "  true"
 
     template = Template(_TEMPLATE_PATH.read_text(encoding="utf-8"))
     script = template.substitute(
-        log_path=shlex.quote(spec.log_path),
+        log_path=shlex.quote(log_path),
         work_dir_block=work_dir_block,
         command=command,
         success_block=success_block,
@@ -47,8 +54,8 @@ def _build_tmux_job_command(spec: CommandSpec) -> str:
     )
     script_quoted = shlex.quote(script)
 
-    log_dir = shlex.quote(str(Path(spec.log_path).parent))
-    session_name = shlex.quote(spec.tmux_session_name)
+    log_dir = shlex.quote(str(Path(log_path).parent))
+    session_name = shlex.quote(job_session_name)
 
     return (
         f"mkdir -p {log_dir} && "
@@ -68,12 +75,12 @@ class PodSSHOperator:
     def _validate_commands(
         self,
         conn: PodConnectionInfo,
-        commands: list[str],
+        checks: list[tuple[str, str]],
         *,
         error_prefix: str,
         error_cls: type[Exception] = ProvisioningError,
     ) -> None:
-        for command in commands:
+        for command, success_message in checks:
             result = self.ssh.run_command(conn, command, check=False)
             if result.returncode != 0:
                 raise error_cls(
@@ -82,6 +89,7 @@ class PodSSHOperator:
                     f"stdout:\n{result.stdout}\n"
                     f"stderr:\n{result.stderr}"
                 )
+            logger.info(success_message)
 
     def _validate_provisioning(
         self,
@@ -91,49 +99,91 @@ class PodSSHOperator:
         error_prefix = f"Provisioning validation failed on pod {conn.pod_id}"
         repo_dir = shlex.quote(spec.repo_dir)
 
-        commands = [
-            f"test -d {repo_dir}",
-            f"test -d {repo_dir}/.git",
-            f"cd {repo_dir} && git rev-parse --is-inside-work-tree",
-            "command -v tmux",
-            f'export PATH="$HOME/.local/bin:$PATH" && cd {repo_dir} && poetry --version',
+        check_groups: list[tuple[str, list[tuple[str, str]]]] = [
             (
-                f'export PATH="$HOME/.local/bin:$PATH" && cd {repo_dir} && '
-                "poetry run python -c 'import scaling_llms; print(\"success\")'"
+                "repo",
+                [
+                    (f"test -d {repo_dir}", "[provisioning] Repo dir test passed"),
+                    (f"test -f {repo_dir}/pyproject.toml", "[provisioning] pyproject.toml test passed"),
+                    (f"test -d {repo_dir}/src", "[provisioning] src dir test passed"),
+                ],
+            ),
+            (
+                "python",
+                [
+                    ("command -v python", "[provisioning] Python binary test passed"),
+                    ("python --version", "[provisioning] Python version test passed"),
+                    (
+                        f"cd {repo_dir} && python -c 'import scaling_llms; print(\"success\")'",
+                        "[provisioning] Python import scaling_llms test passed",
+                    ),
+                    (
+                        "python -c 'import sys; print(sys.executable)'",
+                        "[provisioning] Python executable test passed",
+                    ),
+                ],
+            ),
+            (
+                "poetry",
+                [
+                    ("command -v poetry", "[provisioning] Poetry binary test passed"),
+                    ("poetry --version", "[provisioning] Poetry version test passed"),
+                ],
+            ),
+            (
+                "tools",
+                [
+                    ("command -v tmux", "[provisioning] tmux test passed"),
+                    ("command -v rclone", "[provisioning] rclone binary test passed"),
+                ],
+            ),
+            (
+                "env",
+                [
+                    (f"test -f {repo_dir}/.env", "[provisioning] .env file test passed"),
+                    (
+                        f"grep -q '^DATABASE_URL=.' {repo_dir}/.env",
+                        "[provisioning] DATABASE_URL test passed",
+                    ),
+                ],
+            ),
+            (
+                "rclone",
+                [
+                    ("test -f /root/.config/rclone/rclone.conf", "[provisioning] rclone config file test passed"),
+                    (
+                        "grep -q '^\\[r2\\]' /root/.config/rclone/rclone.conf",
+                        "[provisioning] r2 remote config test passed",
+                    ),
+                    (
+                        "rclone listremotes | grep -q '^r2:$'",
+                        "[provisioning] rclone remote listing test passed",
+                    ),
+                    (
+                        "rclone ls r2:scaling-llms >/dev/null",
+                        "[provisioning] r2 bucket access test passed",
+                    ),
+                ],
             ),
         ]
 
-        if spec.rclone_config_local is not None:
-            commands.append(f"test -f {spec.rclone_config_remote}")
-
-        if spec.env_file_local is not None and spec.env_file_remote is not None:
-            commands.extend(
-                [
-                    f"test -f {spec.env_file_remote}",
-                    f'test "$(stat -c %a {spec.env_file_remote})" = 600',
-                ]
+        for group_name, checks in check_groups:
+            logger.info(f"[provisioning] Running {group_name} validation checks")
+            self._validate_commands(
+                conn,
+                checks,
+                error_prefix=error_prefix,
             )
+            logger.info(f"[provisioning] {group_name.capitalize()} validation passed")
 
-        repo_branch_value = spec.repo_branch.strip() if spec.repo_branch else None
-        if repo_branch_value:
-            commands.append(
-                f"cd {repo_dir} && test \"$(git rev-parse --abbrev-ref HEAD)\" = {shlex.quote(repo_branch_value)}"
-            )
-
-        self._validate_commands(
-            conn,
-            commands,
-            error_prefix=error_prefix,
-        )
-
-    def upload_files(self, conn: PodConnectionInfo, spec: CommandSpec) -> None:
+    def upload_files(self, conn: PodConnectionInfo, upload_files: tuple[tuple[str, str], ...]) -> None:
         """Upload local files to the remote pod before launching the job."""
-        if not spec.upload_files:
+        if not upload_files:
             return
 
         error_prefix = f"Failed to upload files to pod {conn.pod_id}"
         try:
-            for local_path, remote_path in spec.upload_files:
+            for local_path, remote_path in upload_files:
                 local = Path(local_path).expanduser().resolve()
                 if not local.exists():
                     raise FileNotFoundError(f"Upload file not found: {local}")
@@ -155,193 +205,17 @@ class PodSSHOperator:
     def set_ssh_client(self, ssh_client: SSHClient) -> None:
         self.ssh = ssh_client
 
-
-    def copy_rclone_config(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
-        """
-        Copy a local rclone config into the remote pod when configured.
-
-        Creates the remote parent directory and uses `scp` to transfer the file.
-        """
-        error_prefix = f"Failed to copy rclone config to pod {conn.pod_id}"
-        try:
-            if spec.rclone_config_local is None:
-                return
-
-            local_rclone = Path(spec.rclone_config_local).expanduser().resolve()
-            if not local_rclone.exists():
-                raise FileNotFoundError(f"rclone config not found: {local_rclone}")
-
-            remote_parent = str(Path(spec.rclone_config_remote).parent)
-            self.ssh.run_command(
-                conn,
-                f"mkdir -p {shlex.quote(remote_parent)}",
-            )
-            logger.info("[rclone] Copying config to %s", spec.rclone_config_remote)
-            self.ssh.scp_to_pod(
-                conn,
-                local_path=local_rclone,
-                remote_path=spec.rclone_config_remote,
-            )
-
-        except Exception as exc:
-            raise ProvisioningError(error_prefix) from exc
-
-    def clone_or_update_repo(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
-        """
-        Ensure the repository is present on the remote pod, cloning or updating.
-
-        Either clones the specified repo (and branch) or performs a fetch/pull to
-        keep an existing checkout up to date.
-        """
-        error_prefix = f"Failed to sync repository on pod {conn.pod_id}"
-        try:
-            repo_url_value = spec.repo_url.strip()
-            if not repo_url_value:
-                raise ValueError("ProvisioningSpec.repo_url must be provided")
-
-            repo_dir = shlex.quote(spec.repo_dir)
-            repo_url = shlex.quote(repo_url_value)
-            repo_branch_value = (
-                spec.repo_branch.strip() if spec.repo_branch else None
-            )
-            branch = (
-                shlex.quote(repo_branch_value) if repo_branch_value else None
-            )
-
-            parent_dir = shlex.quote(str(Path(spec.repo_dir).parent))
-
-            if branch:
-                base_cmd = (
-                    f"mkdir -p {parent_dir} && "
-                    f"if [ -d {repo_dir}/.git ]; then "
-                    f"git -C {repo_dir} fetch origin {branch} --prune && "
-                    f"git -C {repo_dir} checkout {branch} && "
-                    f"git -C {repo_dir} reset --hard origin/{branch}; "
-                    f"else git clone --branch {branch} --single-branch "
-                    f"{repo_url} {repo_dir}; fi"
-                )
-            else:
-                base_cmd = (
-                    f"mkdir -p {parent_dir} && "
-                    f"if [ -d {repo_dir}/.git ]; then "
-                    f"git -C {repo_dir} fetch --all --prune && "
-                    "current_branch=$(git -C "
-                    f"{repo_dir} rev-parse --abbrev-ref HEAD) && "
-                    'if [ "$current_branch" = "HEAD" ]; then '
-                    "default_branch=$(git -C "
-                    f"{repo_dir} remote show origin | "
-                    "sed -n 's/.*HEAD branch: //p') && "
-                    f'git -C {repo_dir} checkout "$default_branch"; '
-                    "fi && "
-                    f"git -C {repo_dir} pull --ff-only; "
-                    f"else git clone {repo_url} {repo_dir}; fi"
-                )
-
-            logger.info("[repo] Syncing repository at %s", spec.repo_dir)
-            self.ssh.run_command(conn, base_cmd)
-
-        except Exception as exc:
-            raise ProvisioningError(error_prefix) from exc
-        
-    
-    def copy_env_file(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
-        if spec.env_file_local is None:
-            return
-        
-        error_prefix = f"Failed to copy env file on pod {conn.pod_id}"
-        try:
-            self.ssh.scp_to_pod(
-                conn,
-                local_path=spec.env_file_local,
-                remote_path=spec.env_file_remote,
-            )
-
-            logger.info("[env] Copying env file to %s", spec.env_file_remote)
-            self.ssh.run_command(
-                conn,
-                f"chmod 600 {spec.env_file_remote}"
-            )
-
-        except Exception as exc:
-            raise ProvisioningError(error_prefix) from exc
-
-    def poetry_install(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
-        """
-        Run `poetry install` in the checked-out repository on the pod.
-
-        Invokes `poetry install` remotely with optional extra args supplied in the
-        setup spec.
-        """
-        error_prefix = f"Failed to install poetry on pod {conn.pod_id}" 
-        try:
-            repo_dir = shlex.quote(spec.repo_dir)
-            extra_args = " ".join(shlex.quote(arg) for arg in spec.poetry_install_args)
-
-            poetry_install_cmd = "poetry install"
-            if extra_args:
-                poetry_install_cmd = f"{poetry_install_cmd} {extra_args}"
-
-            cmd = (
-                "set -euo pipefail; "
-                f"cd {repo_dir}; "
-                "python3 -m ensurepip --upgrade >/dev/null 2>&1 || true; "
-                "python3 -m pip install --user poetry; "
-                "export PATH=\"$HOME/.local/bin:$PATH\"; "
-                "test -x \"$HOME/.local/bin/poetry\"; "
-                "ln -sf \"$HOME/.local/bin/poetry\" /usr/local/bin/poetry; "
-                "poetry --version; "
-                f"{poetry_install_cmd}"
-            )
-
-            logger.info("[poetry] Running poetry install in %s", spec.repo_dir)
-            self.ssh.run_command(conn, cmd)
-
-        except Exception as exc:
-            raise ProvisioningError(error_prefix) from exc
-
-    def install_tmux(self, conn: PodConnectionInfo) -> None:
-        error_prefix = f"Failed to install tmux on pod {conn.pod_id}"
-        try:
-            cmd = (
-                "set -euo pipefail; "
-                "if command -v tmux >/dev/null 2>&1; then exit 0; fi; "
-                "export DEBIAN_FRONTEND=noninteractive; "
-                "apt-get update && apt-get install -y tmux"
-            )
-            logger.info("[tmux] Installing tmux")
-            self.ssh.run_command(conn, cmd)
-
-        except Exception as exc:
-            raise ProvisioningError(error_prefix) from exc
-        
-
-    def create_jupyter_kernel(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
-        """
-        Install a Jupyter kernel in the remote environment when requested.
-
-        When `create_jupyter_kernel` is True, installs an ipykernel entry for the
-        project inside the pod's environment.
-        """
-        try:
-            if not spec.create_jupyter_kernel:
-                return
-
-            repo_dir = shlex.quote(spec.repo_dir)
-            kernel_name = shlex.quote(spec.kernel_name)
-            kernel_display_name = shlex.quote(spec.kernel_display_name)
-            cmd = (
-                f"cd {repo_dir} && "
-                "poetry run python -m ipykernel install --user "
-                f"--name {kernel_name} --display-name {kernel_display_name}"
-            )
-            logger.info("[jupyter] Creating kernel %s", spec.kernel_name)
-            self.ssh.run_command(conn, cmd)
-        except Exception as exc:
-            raise ProvisioningError(
-                f"Failed to create Jupyter kernel on pod {conn.pod_id}"
-            ) from exc
-
-    def launch_tmux_job(self, conn: PodConnectionInfo, spec: CommandSpec) -> str:
+    def launch_tmux_job(
+        self,
+        conn: PodConnectionInfo,
+        command: str,
+        work_dir: str,
+        job_session_name: str,
+        log_path: str,
+        stop_pod_at_success: bool = False,
+        stop_pod_at_failure: bool = False,
+        upload_files: tuple[tuple[str, str], ...] = (),
+    ) -> str:
         """Launch the job command on the pod inside a tmux session.
 
         Executes the tmux-start command remotely and returns the configured log
@@ -349,25 +223,119 @@ class PodSSHOperator:
         """
         error_prefix = f"Failed to launch job on pod {conn.pod_id}"
         try:
-            self.upload_files(conn, spec)
-            remote_cmd = _build_tmux_job_command(spec)
+            self.upload_files(conn, upload_files)
+            remote_cmd = _build_tmux_job_command(
+                command=command,
+                work_dir=work_dir,
+                job_session_name=job_session_name,
+                log_path=log_path,
+                stop_pod_at_success=stop_pod_at_success,
+                stop_pod_at_failure=stop_pod_at_failure,
+            )
 
-            logger.info("[job] Launching command: %s", spec.command)
+            logger.info("[job] Launching command with tmux: %s", command)
+            logger.info("[job] Writing logs to: %s", log_path)
             self.ssh.run_command(conn, remote_cmd)
 
             # Return the command to stream logs from the job
-            return self.ssh.make_shell_command(conn, f"tail -f {spec.log_path}")
+            return self.ssh.make_shell_command(conn, f"tail -f {log_path}")
         except Exception as exc:
             raise CommandError(error_prefix) from exc
         
+    def launch_job(
+        self,
+        conn: PodConnectionInfo,
+        command: str,
+        log_path: str,
+        upload_files: tuple[tuple[str, str], ...] = (),
+    ) -> str:
+        """
+        Launch the job command on the pod, writing all stdout/stderr to log_path.
 
-    def git_pull(self, conn: PodConnectionInfo, spec: ProvisioningSpec) -> None:
+        Returns the shell command that can be used to stream the log file.
+        """
+        error_prefix = f"Failed to launch job on pod {conn.pod_id}"
+        try:
+            self.upload_files(conn, upload_files)
+
+            log_path_quoted = shlex.quote(log_path)
+            remote_cmd = f"mkdir -p $(dirname {log_path_quoted}) && {command} > {log_path_quoted} 2>&1"
+
+            logger.info("[job] Launching command: %s", command)
+            logger.info("[job] Writing logs to: %s", log_path)
+
+            self.ssh.run_command(conn, remote_cmd)
+
+            return self.ssh.make_shell_command(conn, f"tail -f {log_path}")
+        except Exception as exc:
+            raise CommandError(error_prefix) from exc
+
+    def kill_job(
+        self,
+        conn: PodConnectionInfo,
+        job_session_name: str | None = None,
+        command_pattern: str | None = None,
+    ) -> None:
+        """Terminate a running job on the pod.
+
+        Args:
+            job_session_name: Name of the tmux session to kill. All child
+                processes of the session are also sent SIGTERM.
+            command_pattern: A substring of the command line to match with
+                ``pkill -f``. Use this to kill a bare process launched via
+                ``launch_job`` (no tmux). The pattern is matched against the
+                full command line of every running process.
+
+        At least one of the two arguments should be provided. Both can be
+        supplied together, in which case the tmux session is killed first and
+        then any remaining matching processes are cleaned up.
+        """
+        error_prefix = f"Failed to kill job on pod {conn.pod_id}"
+        try:
+            if job_session_name:
+                session = shlex.quote(job_session_name)
+                logger.info("[kill] Killing tmux session: %s", job_session_name)
+                self.ssh.run_command(
+                    conn,
+                    f"tmux kill-session -t {session} >/dev/null 2>&1 || true",
+                    check=False,
+                )
+                # Also kill any child processes spawned by the session that
+                # may outlive the tmux server (e.g. the training script).
+                self.ssh.run_command(
+                    conn,
+                    f"pkill -TERM -f {session} 2>/dev/null || true",
+                    check=False,
+                )
+                logger.info("[kill] Tmux session '%s' terminated", job_session_name)
+
+            if command_pattern:
+                pattern = shlex.quote(command_pattern)
+                logger.info("[kill] Killing processes matching pattern: %s", command_pattern)
+                self.ssh.run_command(
+                    conn,
+                    f"pkill -TERM -f {pattern} 2>/dev/null || true",
+                    check=False,
+                )
+                logger.info("[kill] Processes matching '%s' sent SIGTERM", command_pattern)
+
+            if not job_session_name and not command_pattern:
+                logger.info("[kill] No session name or pattern provided; killing all tmux sessions")
+                self.ssh.run_command(
+                    conn,
+                    "tmux kill-server >/dev/null 2>&1 || true",
+                    check=False,
+                )
+        except Exception as exc:
+            raise CommandError(error_prefix) from exc
+
+    def git_pull(self, conn: PodConnectionInfo, repo_dir: str) -> None:
         """Run `git pull` in the specified directory on the remote pod."""
         error_prefix = f"Failed to run git pull on pod {conn.pod_id}"
         try:
-            repo_dir_quoted = shlex.quote(spec.repo_dir)
+            repo_dir_quoted = shlex.quote(repo_dir)
             cmd = f"cd {repo_dir_quoted} && git pull"
-            logger.info("[git] Running git pull in %s", spec.repo_dir)
+            logger.info("[git] Running git pull in %s", repo_dir)
             self.ssh.run_command(conn, cmd)
         except Exception as exc:
             raise CommandError(error_prefix) from exc

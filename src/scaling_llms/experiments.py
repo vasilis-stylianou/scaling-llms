@@ -742,26 +742,20 @@ class ExperimentConfig:
 
     
     @classmethod
-    def load_from_module_path(cls, module_path: str) -> "ExperimentConfig":
-        import importlib
+    def load_from_file(cls, file_path: str) -> "ExperimentConfig":
         import importlib.util
         from pathlib import Path
 
-        try:
-            module = importlib.import_module(module_path)
-        except ModuleNotFoundError as exc:
-            module_file = Path.cwd() / (module_path.replace(".", "/") + ".py")
-            if not module_file.exists():
-                raise
+        path = Path(file_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Experiment config file not found: {path}")
 
-            spec = importlib.util.spec_from_file_location(module_path, module_file)
-            if spec is None or spec.loader is None:
-                raise RuntimeError(
-                    f"Could not load config module from path: {module_file}"
-                ) from exc
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Could not load experiment config from: {path}")
 
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
 
         return cls.from_module(module)
     

@@ -21,7 +21,7 @@ from scaling_llms.utils.loggers import setup_console_logging, BaseLogger
 
 
 _REQUIRED_TOP_LEVEL_YAML_KEYS = {
-    "experiment_config_module",
+    "experiment_config",
     "registries",
 }
 
@@ -77,12 +77,12 @@ def _load_config(config_path: Path) -> LoadedConfig:
         missing_keys = ", ".join(sorted(missing))
         raise ValueError(f"Missing required config keys: {missing_keys}")
 
-    experiment_config_module = data["experiment_config_module"]
+    experiment_config_path = data["experiment_config"]
     if (
-        not isinstance(experiment_config_module, str)
-        or not experiment_config_module.strip()
+        not isinstance(experiment_config_path, str)
+        or not experiment_config_path.strip()
     ):
-        raise ValueError("experiment_config_module must be a non-empty string")
+        raise ValueError("experiment_config must be a non-empty file path string")
 
     registries = data["registries"]
     if not isinstance(registries, dict):
@@ -101,8 +101,8 @@ def _load_config(config_path: Path) -> LoadedConfig:
         raise ValueError("cleanup_after_sync must be a boolean")
 
     return LoadedConfig(
-        experiment=ExperimentConfig.load_from_module_path(
-            experiment_config_module.strip()
+        experiment=ExperimentConfig.load_from_file(
+            experiment_config_path.strip()
         ),
         run_registry=MakeRunRegistryConfig.from_raw(
             name="runs",

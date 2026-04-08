@@ -51,7 +51,7 @@ def with_retries(
 
 
 class PodManager:
-    """Manages pod lifecycle: create, stop, resume, terminate, and readiness polling."""
+    """Manages pod lifecycle: create, stop, terminate, and readiness polling."""
 
     def __init__(
         self,
@@ -161,12 +161,6 @@ class PodManager:
         """
         with_retries(runpod.stop_pod, pod_id, retry_policy=retry_policy)
 
-    def resume_pod(self, pod_id: str, gpu_count: int = 0) -> None:
-        try:
-            runpod.resume_pod(pod_id=pod_id, gpu_count=gpu_count)
-        except Exception as exc:
-            raise RunPodError(f"Failed to resume pod {pod_id}") from exc
-
     def terminate_pod(
         self,
         pod_id: str,
@@ -274,46 +268,20 @@ class PodManager:
             "absent or terminal before timeout."
         )
     
-    def resolve_or_create_pod(
+    def create_and_wait(
         self,
         spec: PodSpec,
         *,
-        reuse_if_exists: bool,
         timeout_s: int = 60,
         poll_s: int = 5,
         retry_policy: RetryPolicy = RetryPolicy(),
     ) -> PodConnectionInfo:
         """
-        Create a pod from `spec` or reuse an existing one, returning SSH info.
+        Create a new pod from `spec` and wait for SSH readiness.
 
-        Either reuses a visible pod matching the name (and waits for SSH) or
-        creates a new pod and waits for SSH readiness before returning connection
-        details.
+        Creates the pod via the RunPod API and polls until SSH is reachable,
+        then returns the connection details.
         """
-        existing: dict[str, Any] | None = None
-        if reuse_if_exists:
-            existing = self._wait_until_pod_visible_by_name(
-                spec.name,
-                timeout_s=min(timeout_s, 60),
-                poll_s=max(1, poll_s),
-                retry_policy=retry_policy,
-            )
-
-        if existing and reuse_if_exists:
-            pod_id = existing.get("id") or existing.get("_id")
-            if not pod_id:
-                raise RuntimeError(f"Existing pod missing id: {existing}")
-            info = self._extract_connection_info(existing)
-            if info.is_ssh_ready:
-                return info
-
-            return self.wait_for_ssh_ready(
-                str(pod_id),
-                timeout_s=timeout_s,
-                poll_s=poll_s,
-                retry_policy=retry_policy,
-            )
-
         created = self.create_pod(
             spec,
             retry_policy=retry_policy,
@@ -378,22 +346,6 @@ class PodManager:
 
         return pod
     
-    def _wait_until_pod_visible_by_name(
-        self,
-        pod_name: str,
-        *,
-        timeout_s: int,
-        poll_s: int,
-        retry_policy: RetryPolicy,
-    ) -> dict[str, Any] | None:
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            pod = self._find_pod_by_name(pod_name, retry_policy=retry_policy)
-            if pod is not None:
-                return pod
-            time.sleep(poll_s)
-        return None
-
     def _pod_missing_from_list(
         self,
         pod_id: str,

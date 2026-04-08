@@ -96,7 +96,7 @@ class CommandSpec:
     # Derived / built by config — consumed as-is by PodSSHOperator.
     command: str
     work_dir: str
-    tmux_session_name: str
+    job_session_name: str
     log_path: str
     stop_pod_at_success: bool = False
     stop_pod_at_failure: bool = False
@@ -105,7 +105,6 @@ class CommandSpec:
 
 @dataclass(frozen=True)
 class WorkflowOptions:
-    reuse_if_exists: bool = False
     timeout_s: int = 900
     poll_s: int = 5
     terminate_on_failure: bool = False

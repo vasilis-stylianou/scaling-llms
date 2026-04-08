@@ -1,11 +1,11 @@
-experiment_config_module: scaling_llms.experiment_configs.tests.test_rclone_sync_run_experiments
+experiment_config: /Users/vasilis/Desktop/scaling-llms/src/scaling_llms/experiment_configs/tests/rclone_sync_runs.py
 cleanup_after_sync: false   # delete local artifacts after each run syncs
 
 registries:
   database_url_env_name: DATABASE_URL
   runs:
     # artifacts_root: /Users/vasilis/Desktop/artifacts
-    artifacts_root: /workspace/artifacts/runs
+    artifacts_root: /workspace/artifacts/dev_runs
     table_name: dev_runs
     sync_hooks_type: rclone
     sync_hooks_args: 
@@ -15,7 +15,7 @@ registries:
 
   datasets:
     # artifacts_root: /Users/vasilis/Desktop/artifacts  
-    artifacts_root: /workspace/artifacts/datasets
+    artifacts_root: /workspace/artifacts/dev_datasets
     table_name: dev_datasets
     sync_hooks_type: rclone
     sync_hooks_args:

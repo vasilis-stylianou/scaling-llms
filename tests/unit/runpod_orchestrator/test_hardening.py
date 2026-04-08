@@ -176,7 +176,7 @@ def test_build_tmux_training_command() -> None:
     spec = TrainSpec(
         command="poetry run python train.py --x 1",
         repo_dir="/workspace/repos/scaling-llms",
-        tmux_session_name="train",
+        job_session_name="train",
         log_path="/workspace/runs/train.log",
     )
     cmd = workflows._build_tmux_training_command(spec)
