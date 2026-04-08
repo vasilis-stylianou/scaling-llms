@@ -10,8 +10,8 @@ from scaling_llms.experiment_configs.wikitext_103_ablations.constants import (
 # TRAINER CONFIGS
 # -------------------------
 _1D_SCREENING_TRAINER_KWARGS = dict(
-    num_steps=100,
-    use_compile=False,
+    num_steps=10,
+    use_compile=True,
     weight_decay=0.1,
     accum_steps=4,
     grad_clip_norm=1.0,
@@ -60,14 +60,14 @@ _SWIGLU_HPARAMS = dict(
 )
 
 _1D_RUNS = [
-    ("baseline_2gpu_sdpa", _BASELINE_HPARAMS),
+    ("new_docker_compile_test", _BASELINE_HPARAMS),
     # ("rms_norm", _RMS_NORM_HPARAMS),
     # ("rotary", _ROTARY_HPARAMS),
     # ("swiglu", _SWIGLU_HPARAMS)
 ]
 
 
-EXPERIMENT_NAME = f"{EXPERIMENT_NAME_PREFIX}_1d_screening"
+EXPERIMENT_NAME = f"{EXPERIMENT_NAME_PREFIX}_tests"
 RUNS = [
     { 
         "method": "start",
