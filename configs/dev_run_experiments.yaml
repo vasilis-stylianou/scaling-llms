@@ -1,4 +1,4 @@
-experiment_config_module: scaling_llms.experiment_configs.tests.wikitext_runs
+experiment_config_module: scaling_llms.experiment_configs.tests.test_rclone_sync_run_experiments
 cleanup_after_sync: false   # delete local artifacts after each run syncs
 
 registries:
