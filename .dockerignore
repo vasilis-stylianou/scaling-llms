@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+*.log
+.DS_Store
+configs/
+tests/
+docs/
+notebooks/

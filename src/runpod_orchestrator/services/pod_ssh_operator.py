@@ -7,7 +7,7 @@ from string import Template
 
 from runpod_orchestrator.clients import SSHClient
 from runpod_orchestrator.exceptions import CommandError, ProvisioningError
-from runpod_orchestrator.specs import ProvisioningSpec, PodConnectionInfo
+from runpod_orchestrator.specs import PodConnectionInfo
 
 
 logger = logging.getLogger("PodSSH")
@@ -94,18 +94,18 @@ class PodSSHOperator:
     def _validate_provisioning(
         self,
         conn: PodConnectionInfo,
-        spec: ProvisioningSpec,
+        repo_dir: str,
     ) -> None:
         error_prefix = f"Provisioning validation failed on pod {conn.pod_id}"
-        repo_dir = shlex.quote(spec.repo_dir)
+        repo_dir_q = shlex.quote(repo_dir)
 
         check_groups: list[tuple[str, list[tuple[str, str]]]] = [
             (
                 "repo",
                 [
-                    (f"test -d {repo_dir}", "[provisioning] Repo dir test passed"),
-                    (f"test -f {repo_dir}/pyproject.toml", "[provisioning] pyproject.toml test passed"),
-                    (f"test -d {repo_dir}/src", "[provisioning] src dir test passed"),
+                    (f"test -d {repo_dir_q}", "[provisioning] Repo dir test passed"),
+                    (f"test -f {repo_dir_q}/pyproject.toml", "[provisioning] pyproject.toml test passed"),
+                    (f"test -d {repo_dir_q}/src", "[provisioning] src dir test passed"),
                 ],
             ),
             (
@@ -114,7 +114,7 @@ class PodSSHOperator:
                     ("command -v python", "[provisioning] Python binary test passed"),
                     ("python --version", "[provisioning] Python version test passed"),
                     (
-                        f"cd {repo_dir} && python -c 'import scaling_llms; print(\"success\")'",
+                        f"cd {repo_dir_q} && python -c 'import scaling_llms; print(\"success\")'",
                         "[provisioning] Python import scaling_llms test passed",
                     ),
                     (
@@ -140,9 +140,9 @@ class PodSSHOperator:
             (
                 "env",
                 [
-                    (f"test -f {repo_dir}/.env", "[provisioning] .env file test passed"),
+                    (f"test -f {repo_dir_q}/.env", "[provisioning] .env file test passed"),
                     (
-                        f"grep -q '^DATABASE_URL=.' {repo_dir}/.env",
+                        f"grep -q '^DATABASE_URL=.' {repo_dir_q}/.env",
                         "[provisioning] DATABASE_URL test passed",
                     ),
                 ],
@@ -176,9 +176,9 @@ class PodSSHOperator:
             )
             logger.info(f"[provisioning] {group_name.capitalize()} validation passed")
 
-    def upload_files(self, conn: PodConnectionInfo, upload_files: tuple[tuple[str, str], ...]) -> None:
+    def upload_files(self, conn: PodConnectionInfo, upload_files: list[tuple[str, str]] | None = None) -> None:
         """Upload local files to the remote pod before launching the job."""
-        if not upload_files:
+        if upload_files is None or len(upload_files) == 0:
             return
 
         error_prefix = f"Failed to upload files to pod {conn.pod_id}"
@@ -214,7 +214,6 @@ class PodSSHOperator:
         log_path: str,
         stop_pod_at_success: bool = False,
         stop_pod_at_failure: bool = False,
-        upload_files: tuple[tuple[str, str], ...] = (),
     ) -> str:
         """Launch the job command on the pod inside a tmux session.
 
@@ -223,7 +222,6 @@ class PodSSHOperator:
         """
         error_prefix = f"Failed to launch job on pod {conn.pod_id}"
         try:
-            self.upload_files(conn, upload_files)
             remote_cmd = _build_tmux_job_command(
                 command=command,
                 work_dir=work_dir,
@@ -238,34 +236,6 @@ class PodSSHOperator:
             self.ssh.run_command(conn, remote_cmd)
 
             # Return the command to stream logs from the job
-            return self.ssh.make_shell_command(conn, f"tail -f {log_path}")
-        except Exception as exc:
-            raise CommandError(error_prefix) from exc
-        
-    def launch_job(
-        self,
-        conn: PodConnectionInfo,
-        command: str,
-        log_path: str,
-        upload_files: tuple[tuple[str, str], ...] = (),
-    ) -> str:
-        """
-        Launch the job command on the pod, writing all stdout/stderr to log_path.
-
-        Returns the shell command that can be used to stream the log file.
-        """
-        error_prefix = f"Failed to launch job on pod {conn.pod_id}"
-        try:
-            self.upload_files(conn, upload_files)
-
-            log_path_quoted = shlex.quote(log_path)
-            remote_cmd = f"mkdir -p $(dirname {log_path_quoted}) && {command} > {log_path_quoted} 2>&1"
-
-            logger.info("[job] Launching command: %s", command)
-            logger.info("[job] Writing logs to: %s", log_path)
-
-            self.ssh.run_command(conn, remote_cmd)
-
             return self.ssh.make_shell_command(conn, f"tail -f {log_path}")
         except Exception as exc:
             raise CommandError(error_prefix) from exc

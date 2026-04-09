@@ -77,33 +77,6 @@ class PodSpec:
 
 
 @dataclass(frozen=True)
-class ProvisioningSpec:
-    repo_dir: str
-    repo_url: str
-    repo_branch: str | None = "main"
-    rclone_config_local: str | None = None
-    rclone_config_remote: str | None = None
-    create_jupyter_kernel: bool = False
-    kernel_name: str = "scaling-llms"
-    kernel_display_name: str = "Python (scaling-llms)"
-    poetry_install_args: list[str] = field(default_factory=list)
-    env_file_local: str | None = None
-    env_file_remote: str | None = None
-
-
-@dataclass(frozen=True)
-class CommandSpec:
-    # Derived / built by config — consumed as-is by PodSSHOperator.
-    command: str
-    work_dir: str
-    job_session_name: str
-    log_path: str
-    stop_pod_at_success: bool = False
-    stop_pod_at_failure: bool = False
-    upload_files: tuple[tuple[str, str], ...] = ()  # [(local_path, remote_path)]
-
-
-@dataclass(frozen=True)
 class WorkflowOptions:
     timeout_s: int = 900
     poll_s: int = 5

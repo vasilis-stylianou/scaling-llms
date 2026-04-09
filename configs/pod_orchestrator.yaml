@@ -1,48 +1,19 @@
-identity_file: ~/.ssh/runpod_key
-
 # Create Pod Args
 pod_spec:
-  name: test-custom-image
-  image_name: stylianouvasilis/scaling-llms:v6
-# runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-  gpu_type_id: # NVIDIA A100-SXM4-80GB
-  gpu_count: 0
-  cpu_type_id: cpu5g-4-16
+  name: debug-wikitext103
+  image_name: stylianouvasilis/scaling-llms:dev-1
+  gpu_type_id: NVIDIA A100-SXM4-80GB
+  gpu_count: 2
+  cpu_type_id: #cpu5g-4-16
   container_disk_in_gb: 40
-  volume_in_gb: 40
+  volume_in_gb: 80
   env:
     DATABASE_URL: ${DATABASE_URL}
     RUNPOD_PUBLIC_KEY: ${RUNPOD_PUBLIC_KEY}
     RCLONE_CONF_B64: ${RCLONE_CONF_B64}
 
-provisioning:
-  # copy_rclone_config
-  rclone_config_local: ~/.config/rclone/rclone.conf
-  # clone_or_update_repo
-  repo_dir: /workspace/repos/scaling-llms
-  repo_url: https://github.com/vasilis-stylianou/scaling-llms.git
-  # copy_env_file
-  env_file_local: ~/Desktop/scaling-llms/.env # no-op if the file doesn't exist, or is set to null/None/empty string
-
-command_spec:
-  # Script path relative to repo_dir (work_dir is always repo_dir)
-  script: scripts/run_experiments.py
-  # Local path to the runtime config to upload before launching.
-  # It will be placed at /workspace/runtime_configs/run_experiments.yaml on the pod.
-  runtime_config_local: /Users/vasilis/Desktop/scaling-llms/configs/dev_run_experiments.yaml
-  # runtime_config_remote: /workspace/runtime_configs/run_experiments.yaml  # default, override if needed
-  # The launch command is derived automatically from gpu_count:
-  #   gpu_count <= 1 → poetry run python <script> <runtime_config_remote>
-  #   gpu_count >  1 → poetry run python -m torch.distributed.run
-  #                        --standalone --nnodes=1 --nproc_per_node=N
-  #                        <script> <runtime_config_remote> --backend nccl
-  stop_pod_at_success: false
-  stop_pod_at_failure: false
-  # job_session_name:  # default: derived from pod_spec.name
-  # log_path:  # default: /workspace/command_logs/<job_session_name>.log  
-
 workflow:
-  timeout_s: 600
+  timeout_s: 300
   poll_s: 5
   terminate_on_failure: false
   retry_policy:

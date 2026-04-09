@@ -152,34 +152,3 @@ class RunArtifacts(Artifacts):
         self.push_dir(new_artifacts_dir)
 
         return new_artifacts_dir
-
-    # def get_experiment_dir(self, experiment_name: str, *, create: bool = False) -> Path:
-    #     experiment_dir = self.root / experiment_name
-    #     if create:
-    #         experiment_dir.mkdir(parents=True, exist_ok=True)
-    #     elif not experiment_dir.exists():
-    #         raise FileNotFoundError(f"Experiment directory does not exist: {experiment_dir}")
-    #     return experiment_dir
-
-    # def allocate_run_dir(self, experiment_name: str) -> Path:
-    #     experiment_dir = self.get_experiment_dir(experiment_name, create=True)
-    #     return make_unique_dir(parent_dir=experiment_dir)
-
-    # def delete_run_dir(self, run_dir: str | Path) -> None:
-    #     path = Path(run_dir).expanduser().resolve()
-    #     relative_artifacts_path = self.get_relative_path(path)
-    #     if path.exists():
-    #         shutil.rmtree(path)
-    #     if self.sync_hooks is not None:
-    #         self.sync_hooks.push_local_to_remote(relative_artifacts_path)
-
-    # def delete_experiment_dir(self, experiment_name: str) -> Path:
-    #     experiment_dir = self.get_experiment_dir(experiment_name, create=False)
-    #     relative_artifacts_path = self.get_relative_path(experiment_dir)
-    #     if experiment_dir.exists():
-    #         shutil.rmtree(experiment_dir)
-    #     if self.sync_hooks is not None:
-    #         self.sync_hooks.push_local_to_remote(relative_artifacts_path)
-    #     return experiment_dir
-
-    # ---- API ----
