@@ -7,6 +7,35 @@ import torch.nn.functional as F
 from scaling_llms.utils.config import BaseJsonConfig
 
 
+"""
+Maximal Update Parameterization (μP) vs Standard Parameterization (SP)
+=======================================================================
+
+                        SP                          μP
+                        ──────────────────────────────────────────────
+Embedding Init. Var.    σ²_base                     σ²_base
+Embedding LR            η_base                      η_base
+Embedding Fwd.          x @ W_emb                   α_input · x @ W_emb
+Hidden Init. Var.       σ²_base                     σ²_base / m_d
+Hidden LR (Adam)        η_base                      η_base / m_d
+Output Logit Fwd.       x @ W_emb.T                 α_output · x @ W_emb.T / m_d
+Attention Logits        Q.T @ K / sqrt(d_head)      Q.T @ K / d_head
+
+Where:
+    m_d     : width multiplier = d / d_base (ratio of current to base width)
+    d_base  : base model width (proxy model used for LR tuning)
+    σ²_base : base init variance (e.g. 1/d_base)
+    η_base  : base learning rate (tuned once at d_base, transferred to all widths)
+    α_input : input multiplier (tunable scalar, default 1.0)
+    α_output: output multiplier (tunable scalar, default 1.0)
+
+Key properties:
+    - Embeddings: init and LR unchanged from SP — no width scaling
+    - Hidden weights: both init variance and LR shrink as 1/m_d
+    - Output logits: scaled down by m_d in forward pass (replaces zero-init convention)
+    - Attention: scale changes from 1/sqrt(d_head) to 1/d_head under μP
+"""
+
 # -------------------------
 # MODEL CONFIGS
 # -------------------------
@@ -56,11 +85,19 @@ class GPTConfig(BaseJsonConfig):
     tied_embeddings: bool = True
     lm_head_bias: bool = False
 
+    # Parametrization
+    mup_base_width: int | None = None
+    ## SP: None
+    ## μP: set to the n_embd of your small proxy model.
+    mup_input_mult:  float = 1.0
+    mup_output_mult: float = 1.0
+    ## μP forward-pass multipliers (only meaningful when using_mup=True)
+    ## Default 1.0 = no-op. Expose for coord checks and ablations.
+
     # Derived (not user inputs)
     d_head: int = dc_field(init=False)
     mlp_class: str = dc_field(init=False)
     activation: str = dc_field(init=False)
-
 
     # --- PRIVATE METHODS ---
     def __post_init__(self):
@@ -117,6 +154,11 @@ class GPTConfig(BaseJsonConfig):
             "resid_pdrop": self.resid_pdrop,
         }.items():
             assert 0.0 <= p < 1.0, f"{name} must be in [0, 1)"
+    
+    @property
+    def using_mup(self) -> bool:
+        return self.mup_base_width is not None
+
             
 def make_activation(name: str) -> nn.Module:
     name = name.lower()
@@ -195,95 +237,6 @@ class RotaryEmbedding(nn.Module):
 # -------------------------
 # ATTENTION
 # -------------------------
-class CausalSelfAttentionCustom(nn.Module):
-    
-    def __init__(self, cfg):
-        super().__init__()
-        
-        # Key variables
-        self.n_head = cfg.n_head
-        self.n_embd = cfg.n_embd
-        self.d_head = cfg.d_head
-        self.seq_len = cfg.seq_len
-        self.pos_encoding_type = cfg.pos_encoding_type
-        self.attn_bias = cfg.attn_bias
-
-        # 1. Fused QKV Projection
-        self.c_attn = nn.Linear(cfg.n_embd, 3 * cfg.n_embd, bias=self.attn_bias)
-
-        # 2. Output Projection
-        self.c_proj = nn.Linear(cfg.n_embd, cfg.n_embd, bias=self.attn_bias)
-
-        # 3. Regularization
-        self.attn_dropout = nn.Dropout(cfg.attn_pdrop)
-        self.resid_dropout = nn.Dropout(cfg.resid_pdrop)
-
-        # 4. Register Mask as a Buffer 
-        # This saves you from passing 'mask' in forward() every time
-        self.register_buffer(
-            "causal_mask", 
-            torch.tril(
-                torch.ones(self.seq_len, self.seq_len, dtype=torch.bool)
-            ).view(1, 1, self.seq_len, self.seq_len)
-        )
-
-        # 5. Positional Encoding (if using RoPE)
-        if self.pos_encoding_type == "rotary":
-            self.rope = RotaryEmbedding(
-                dim=self.d_head,
-                max_seq_len=cfg.seq_len,
-                base=cfg.rope_theta,
-            )
-        else:
-            self.rope = None
-
-    def forward(self, x):
-        B, T, D = x.shape # (Batch, Seq_Len, Embedding/Model_Dim)
-
-        # --- STEP 1: Calculate Q, K, V ---
-        # Run the linear layer
-        # Shape: (B, T, 3 * D)
-        qkv = self.c_attn(x) 
-
-        # Reshape to isolate heads and QKV 
-        # We move the '3' to the front (dim 0) for easy unpacking
-        # Shape: (3, B, n_head, T, d_head)
-        qkv = qkv.view(B, T, 3, self.n_head, self.d_head).permute(2, 0, 3, 1, 4)
-
-        # Unpack: Results are now cleanly (B, n_head, T, d_head)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        # Optional RoPE application
-        if self.rope is not None:
-            q, k = self.rope(q, k)
-
-        # --- STEP 2: Attention Mechanism ---
-        # (B, n_head, T, d_head) @ (B, n_head, d_head, T) -> (B, n_head, T, T)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.d_head))
-        
-        # Apply Causal Mask (using the registered buffer)
-        # NOTE: Slice the mask to T because the current batch may be shorter than cfg.seq_len
-        att = att.masked_fill(~self.causal_mask[:,:,:T,:T], float('-inf'))
-        
-        # Softmax & Dropout
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        
-        # Weighted Sum
-        # (B, n_head, T, T) @ (B, n_head, T, d_head) -> (B, n_head, T, d_head)
-        y = att @ v
-
-        # --- STEP 3: Reassemble ---
-        # 1. Transpose: Swap Head and Time back -> (B, T, n_head, d_head)
-        # 2. Contiguous: Fix memory layout
-        # 3. View: Merge H and d -> (B, T, D)
-        y = y.transpose(1, 2).contiguous().view(B, T, D)
-
-        # --- STEP 4: Output Projection ---
-        y = self.resid_dropout(self.c_proj(y))
-        
-        return y
-    
 class CausalSelfAttention(nn.Module):
     
     def __init__(self, cfg):
@@ -317,6 +270,14 @@ class CausalSelfAttention(nn.Module):
         else:
             self.rope = None
 
+        # 5. μP uses 1/d_head instead of 1/sqrt(d_head).
+        # (Only relevant when d_head scales with n_embd, i.e., fixed n_head.)
+        # PyTorch's SDPA accepts an explicit scale kwarg (requires torch >= 2.1).
+        if cfg.using_mup:
+            self.attn_scale = 1.0 / cfg.d_head
+        else:
+            self.attn_scale = 1.0 / math.sqrt(cfg.d_head)
+
     def forward(self, x):
         B, T, D = x.shape # (Batch, Seq_Len, Embedding/Model_Dim)
 
@@ -340,12 +301,11 @@ class CausalSelfAttention(nn.Module):
         # --- STEP 2: Attention Mechanism ---
         # SDPA -> (B, n_head, T, d_head)
         y = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
+            q, k, v,
             attn_mask=None,
             dropout_p=self.attn_pdrop if self.training else 0.0,
             is_causal=True, # handles the causal mask for you
+            scale=self.attn_scale,   # override the default
         )
 
         # --- STEP 3: Reassemble ---
@@ -483,15 +443,48 @@ class GPTModel(nn.Module):
         if cfg.tied_embeddings:
             self.lm_head.weight = self.transformer.wte.weight
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        # E. Residual projection scaling (both SP and μP)
+        ## Scale c_proj layers (attn output + MLP down-proj) by 1/sqrt(2*L)
+        ## to prevent residual stream variance from growing with depth.
+        for name, p in self.named_parameters():
+            if name.endswith("c_proj.weight"):
+                p.data.mul_((2 * cfg.n_layer) ** -0.5)
 
-    def forward(self, idx, targets=None, loss_reduction="sum") -> GPTOutput:
+        # F. μP: zero-init the output projection (only when not tied to wte)
+        if cfg.using_mup and not cfg.tied_embeddings:
+            nn.init.zeros_(self.lm_head.weight)
+
+    # --- PRIVATE METHODS ---
+    def _init_weights(self, module: nn.Module) -> None:
+        """
+        SP init: all linears get the same std (width-independent).
+        μP init w/ AdamW: hidden linears scale as 1/sqrt(n_embd); embeddings stay at base std.
+        """
+        d = self.cfg.n_embd
+
+        if self.cfg.using_mup:
+            d_base = self.cfg.mup_base_width
+
+            # Embedding init: fixed at base std regardless of width
+            input_std  = d_base ** -0.5
+            # Hidden init: 1/sqrt(d) — same as SP at this width,
+            # μP transfer comes from LR scaling, not init std change
+            hidden_std = d ** -0.5
+        else:
+            # SP: width-dependent (fixes your existing bug from the review)
+            input_std  = d ** -0.5
+            hidden_std = d ** -0.5
+
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=input_std)
+        elif isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=hidden_std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        # RMSNorm / LayerNorm weights are already ones by default — leave them.
+
+    def _encode(self, idx: torch.Tensor) -> torch.Tensor:
+        """Shared: embeddings → blocks → final norm."""
         B, T = idx.size()
 
         assert T <= self.cfg.seq_len, (
@@ -508,6 +501,11 @@ class GPTModel(nn.Module):
             # Add Positional Embeddings of shape (T, D)
             x = x + self.transformer.wpe(pos)
 
+        # α_input: scales embedding output before entering residual stream
+        # No-op when mup_input_mult=1.0 or using_mup=False
+        if self.cfg.using_mup and self.cfg.mup_input_mult != 1.0:
+            x = x * self.cfg.mup_input_mult
+
         # 2. Dropout after embeddings
         x = self.transformer.embd_drop(x)
 
@@ -518,23 +516,109 @@ class GPTModel(nn.Module):
         # 4. Final Norm
         x = self.transformer.norm_f(x)
 
-        # 5. Output Head
-        if targets is not None:
-            # If we are training, we only need the logits for the last few tokens
-            # or all tokens depending on implementation. Here we compute all.
-            logits = self.lm_head(x)
+        return x
 
-            # Flatten for CrossEntropy: (B*T, Vocab)
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                reduction=loss_reduction
-            )
+    def _decode(self, x: torch.Tensor) -> torch.Tensor:
+        """Shared: final norm output → logits with optional μP scaling."""
+        logits = self.lm_head(x)
 
-        else:
-            # Inference optimization: usually we only care about the LAST token's logits
-            # But for general correctness, we return all.
-            logits = self.lm_head(x[:, [-1], :]) # Shape (B, 1, Vocab)
-            loss = None
+        if self.cfg.using_mup:
+            # α_output: scales logits before loss
+            # In μP the output is also divided by m_d = n_embd / mup_base_width
+            # α_output lets you tune that scale independently
+            m_d = self.cfg.n_embd / self.cfg.mup_base_width
+            logits = logits * (self.cfg.mup_output_mult / m_d)
 
+        return logits
+
+    # --- API ---
+    def get_param_groups(self, base_lr: float, weight_decay: float) -> list[dict]:
+        """
+        Returns optimizer param groups.
+
+        In SP: all params share base_lr (with decay/no-decay split).
+        In μP: hidden weights (all linears) get lr = base_lr * (d_base / d).
+            Embeddings, norms, biases, and lm_head keep base_lr.
+
+        Usage:
+            groups = model.get_param_groups(base_lr=3e-4, weight_decay=0.1)
+            optimizer = torch.optim.AdamW(groups)
+        """
+        if not self.cfg.using_mup:
+            # SP: standard decay / no-decay split, same LR for all
+            decay, no_decay = [], []
+            for name, p in self.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if p.ndim < 2 or "bias" in name:
+                    no_decay.append(p)
+                else:
+                    decay.append(p)
+            return [
+                {"params": decay,    "lr": base_lr, "weight_decay": weight_decay},
+                {"params": no_decay, "lr": base_lr, "weight_decay": 0.0},
+            ]
+
+        # μP: three groups by parameter type
+        d = self.cfg.n_embd
+        d_base = self.cfg.mup_base_width
+        hidden_lr = base_lr * (d_base / d)   # shrinks for wider models
+
+        def _classify(name: str, p: nn.Parameter) -> str:
+            # Output head (untied only — tied weights are classified as input)
+            if "lm_head" in name and not self.cfg.tied_embeddings:
+                return "output"
+            # Embeddings, norms, biases → input LR
+            if "wte" in name or "wpe" in name:
+                return "input"
+            if p.ndim < 2 or "bias" in name or "norm" in name:
+                return "input"
+            # Everything else (Q, K, V, O projections; MLP up/gate/down) → hidden LR
+            return "hidden"
+
+        groups: dict[str, dict] = {
+            "input_decay":   {"params": [], "lr": base_lr,   "weight_decay": weight_decay},
+            "input_nodecay": {"params": [], "lr": base_lr,   "weight_decay": 0.0},
+            "hidden_decay":  {"params": [], "lr": hidden_lr, "weight_decay": weight_decay},
+            "hidden_nodecay":{"params": [], "lr": hidden_lr, "weight_decay": 0.0},
+            "output_decay":  {"params": [], "lr": base_lr,   "weight_decay": weight_decay},
+            "output_nodecay":{"params": [], "lr": base_lr,   "weight_decay": 0.0},
+        }
+
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            kind = _classify(name, p)
+            has_decay = p.ndim >= 2 and "bias" not in name and "norm" not in name
+            key = f"{kind}_{'decay' if has_decay else 'nodecay'}"
+            groups[key]["params"].append(p)
+
+        # Drop empty groups (AdamW will warn otherwise)
+        return [g for g in groups.values() if len(g["params"]) > 0]
+
+    def forward(self, idx, targets, loss_reduction="mean") -> GPTOutput:
+        """
+        Training forward pass. Always computes loss.
+        targets is required — if you don't have targets, use forward_inference().
+        Returns logits over all positions (B, T, vocab_size).
+        """
+        x = self._encode(idx)
+        logits = self._decode(x)
+
+        # Flatten for CrossEntropy: (B*T, Vocab)
+        loss = F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            targets.reshape(-1),
+            reduction=loss_reduction
+        )
         return GPTOutput(logits=logits, loss=loss)
+
+    def forward_inference(self, idx) -> torch.Tensor:
+        """
+        Inference forward pass. Returns logits for last token only (B, 1, vocab_size).
+        No loss computation. Use this for generation.
+        """
+        x = self._encode(idx)
+        # Only decode the last position — avoids materializing full (B, T, vocab) tensor
+        logits = self._decode(x[:, [-1], :])
+        return logits
