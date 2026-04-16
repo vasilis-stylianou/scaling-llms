@@ -50,13 +50,11 @@ else
     fi
 fi
 
-# ── Install all Python deps (including dev group) ─────────────────────────────
-if [ -f "${REPO_DIR}/pyproject.toml" ]; then
-    echo "[entrypoint] installing Python dependencies..."
-    cd "${REPO_DIR}"
-    poetry install --only main,docker-dev --no-ansi
-    echo "[entrypoint] dependencies installed"
-fi
+# Install project package (deps already installed at build time)
+echo "[entrypoint] installing project package..."
+cd "${REPO_DIR}"
+poetry install --only-root --no-ansi
+echo "[entrypoint] project package installed"
 
 # Write .env after clone (repo dir now exists)
 if [ -n "${DATABASE_URL}" ]; then

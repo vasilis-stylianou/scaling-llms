@@ -78,6 +78,10 @@ CMD ["sleep", "infinity"]
 # ── Dev image ─────────────────────────────────────────────────────────────────
 FROM base AS dev
 
+# Pre-install deps at build time (repo is cloned at runtime by entrypoint)
+COPY pyproject.toml poetry.lock /tmp/deps/
+RUN cd /tmp/deps && poetry install --no-root --only main,docker-dev --no-ansi && rm -rf /tmp/deps
+
 COPY scripts/docker_entrypoint_dev.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

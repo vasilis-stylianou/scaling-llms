@@ -2,9 +2,9 @@
 pod_spec:
   name: test-pykernel
   image_name: stylianouvasilis/scaling-llms:dev-1
-  gpu_type_id: # NVIDIA A100-SXM4-80GB
-  gpu_count: 0 
-  cpu_type_id: cpu5g-8-32 # 8 cores, 32GB RAM
+  gpu_type_id: NVIDIA A100-SXM4-80GB
+  gpu_count: 1 
+  cpu_type_id: # cpu5g-4-16 # <cpu flavor>-<num of CPU cores>-<RAM (GB)>
   container_disk_in_gb: 40 # ephemeral disk for container OS, software, etc.
   volume_in_gb: 40 # persistent volume for datasets, model checkpoints, logs, etc.
   env:

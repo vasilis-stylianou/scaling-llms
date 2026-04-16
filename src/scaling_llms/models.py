@@ -83,7 +83,7 @@ class GPTConfig(BaseJsonConfig):
     attn_bias: bool = False
 
     # LM Head
-    tied_embeddings: bool = True
+    tied_embeddings: bool = False
     lm_head_bias: bool = False
 
     # Parametrization
