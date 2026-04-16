@@ -13,15 +13,6 @@ else
     echo "[entrypoint] WARNING: RUNPOD_PUBLIC_KEY not set"
 fi
 
-# Write DATABASE_URL to .env for the application to use
-if [ -n "${DATABASE_URL}" ]; then
-    printf 'DATABASE_URL=%s\n' "${DATABASE_URL}" > /workspace/repos/scaling-llms/.env
-    chmod 600 /workspace/repos/scaling-llms/.env
-    echo "[entrypoint] .env written"
-else
-    echo "[entrypoint] WARNING: DATABASE_URL not set"
-fi
-
 # Write rclone config if RCLONE_CONF_B64 is set (base64-encoded content of rclone.conf)
 if [ -n "${RCLONE_CONF_B64}" ]; then
     mkdir -p /root/.config/rclone
