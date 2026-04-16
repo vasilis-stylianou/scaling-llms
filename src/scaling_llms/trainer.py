@@ -62,9 +62,9 @@ class TrainerConfig(BaseJsonConfig):
 
     # Trackers / Logging
     enable_tb: bool = False
-    net_log_freq: int = 50
-    sys_log_freq: int = 100
-    eval_log_freq: int = 500
+    net_log_freq: int = -1
+    sys_log_freq: int = -1
+    eval_log_freq: int = -1
     ckpt_log_freq: int = -1
     keep_last_n: int | None = 3
     best_eval_nll_tol: float = 1e-4

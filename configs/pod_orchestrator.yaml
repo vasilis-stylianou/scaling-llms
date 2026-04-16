@@ -1,10 +1,10 @@
 # Create Pod Args
 pod_spec:
-  name: debug-wikitext103
+  name: test-pykernel
   image_name: stylianouvasilis/scaling-llms:dev-1
-  gpu_type_id: NVIDIA A100-SXM4-80GB
-  gpu_count: 2
-  cpu_type_id: #cpu5g-4-16
+  gpu_type_id: # NVIDIA A100-SXM4-80GB
+  gpu_count: 0 
+  cpu_type_id: cpu5g-4-16
   container_disk_in_gb: 40
   volume_in_gb: 80
   env:

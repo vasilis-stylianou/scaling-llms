@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from dotenv import load_dotenv
 import re
@@ -142,4 +143,36 @@ class PodOrchestrator(PodSSHOperator, PodManager):
             log_path=str(log_path),
             stop_pod_at_success=stop_pod_at_success,
             stop_pod_at_failure=stop_pod_at_failure,
+        )
+    
+    def open_remote_vscode(
+        self, 
+        conn: PodConnectionInfo | None = None,
+        work_dir: str = "/workspace",
+    ) -> None:
+        conn = conn or self.conn
+        if conn is None:
+            raise ValueError("No active connection available.")
+
+        # Install ipykernel to enable Jupyter support in VSCode remote sessions
+        self.install_ipykernel(conn)
+
+        # Add remote host to local SSH config
+        local_repo_path = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=Path("."),
+                text=True
+            ).strip()
+        )
+        script_path = (local_repo_path / "scripts" / "setup_runpod_host.sh").as_posix()
+        subprocess.run(
+            ["bash", str(script_path), conn.public_ip, str(conn.ssh_port)],
+            check=True
+        )
+        
+        # Open VSCode connected to the pod
+        subprocess.run(
+            ["code", "--new-window", "--remote", "ssh-remote+running-runpod", work_dir],
+            check=True,
         )

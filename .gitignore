@@ -19,3 +19,8 @@ __pycache__/
 
 # PyTest
 .pytest_cache/
+
+
+# Dirs
+docs/
+notebooks/debug/

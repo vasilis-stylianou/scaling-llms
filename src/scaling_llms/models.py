@@ -51,6 +51,7 @@ POSITIONAL_ENCODING_TYPES = {"absolute", "rotary"}
 
 @dataclass
 class GPTConfig(BaseJsonConfig):
+    # Dimensions
     seq_len: int = 512
     vocab_size: int = 256
     n_embd: int = 256

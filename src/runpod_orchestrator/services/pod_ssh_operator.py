@@ -6,6 +6,8 @@ from pathlib import Path
 from string import Template
 
 from runpod_orchestrator.clients import SSHClient
+import subprocess
+
 from runpod_orchestrator.exceptions import CommandError, ProvisioningError
 from runpod_orchestrator.specs import PodConnectionInfo
 
@@ -65,7 +67,6 @@ def _build_tmux_job_command(
 
 
 class PodSSHOperator:
-    """Sets up a pod: rclone config, repo clone/update, poetry install, optional kernel."""
     def __init__(
         self,
         ssh_client: SSHClient | None = None,
@@ -309,3 +310,23 @@ class PodSSHOperator:
             self.ssh.run_command(conn, cmd)
         except Exception as exc:
             raise CommandError(error_prefix) from exc
+        
+    def install_ipykernel( self,
+        conn: PodConnectionInfo,
+        repo_dir: str = "/workspace/repos/scaling-llms",
+    ) -> None:
+        """
+        Install a Jupyter kernel in the remote environment when requested.
+        """
+        try:
+            repo_dir_q = shlex.quote(repo_dir)
+            cmd = (
+                f"cd {repo_dir_q} && "
+                "poetry add ipykernel"
+            )
+            logger.info("Installing ipykernel")
+            self.ssh.run_command(conn, cmd)
+        except Exception as exc:
+            raise ProvisioningError(
+                f"Failed to install ipykernel on pod {conn.pod_id}"
+            ) from exc

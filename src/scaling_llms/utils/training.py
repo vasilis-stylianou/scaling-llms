@@ -124,6 +124,17 @@ def make_timer(timer_mode: str) -> DeviceTimer:
 # -----------------------------
 # OPTIMIZATION
 # -----------------------------
+def make_adamw_optimizer(model, cfg: Any):
+    param_groups = model.get_param_groups(
+        base_lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+    )
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        betas=(cfg.beta1, cfg.beta2),
+    )
+    return optimizer
+
 def make_lr_scheduler(optimizer, cfg: Any):
     if cfg.lr_schedule in (None, "none"):
         return None

@@ -4,25 +4,6 @@ set -e
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
-# Clone repo if not present
-# REPO_DIR=/workspace/repos/scaling-llms
-# REPO_URL=${REPO_URL:-"https://github.com/vasilis-stylianou/scaling-llms.git"}
-
-# if [ -d "$REPO_DIR/.git" ]; then
-#     echo "[entrypoint] repo exists, pulling latest..."
-#     git -C "$REPO_DIR" pull
-#     echo "[entrypoint] pull done"
-# else
-#     if [ -d "$REPO_DIR" ]; then
-#         echo "[entrypoint] stale directory found, removing..."
-#         cd /  # <-- get out of the directory before deleting it
-#         rm -rf "$REPO_DIR"
-#     fi
-#     echo "[entrypoint] cloning repo..."
-#     git clone "$REPO_URL" "$REPO_DIR"
-#     echo "[entrypoint] clone done"
-# fi
-
 # RunPod injects the pod's public key via this env var at container start
 if [ -n "${RUNPOD_PUBLIC_KEY}" ]; then
     printf '%s\n' "${RUNPOD_PUBLIC_KEY}" > /root/.ssh/authorized_keys

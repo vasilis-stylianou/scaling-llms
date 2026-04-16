@@ -26,7 +26,7 @@ from scaling_llms.registries import (
 )
 from scaling_llms.tracking.run import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
-from scaling_llms.utils.training import make_lr_scheduler, set_determinism
+from scaling_llms.utils.training import make_adamw_optimizer, make_lr_scheduler, set_determinism
 
 # =============================================================================
 # Shared functions
@@ -80,12 +80,13 @@ def build_trainer(
     scaler = torch.cuda.amp.GradScaler(
         enabled=(cfg.precision == "fp16") and cfg.device.startswith("cuda")
     )
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=cfg.lr,
-        betas=(cfg.beta1, cfg.beta2),
-        weight_decay=cfg.weight_decay,
-    )
+    optimizer = make_adamw_optimizer(model, cfg)
+    # optimizer = torch.optim.AdamW(
+    #     model.parameters(),
+    #     lr=cfg.lr,
+    #     betas=(cfg.beta1, cfg.beta2),
+    #     weight_decay=cfg.weight_decay,
+    # )
     lr_scheduler = make_lr_scheduler(optimizer, cfg)
 
     # 5. Trainer
@@ -740,7 +741,6 @@ class ExperimentConfig:
             runs=config_module.RUNS,
         )
 
-    
     @classmethod
     def load_from_file(cls, file_path: str) -> "ExperimentConfig":
         import importlib.util
