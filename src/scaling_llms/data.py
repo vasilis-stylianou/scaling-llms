@@ -172,11 +172,11 @@ def load_memmap_tokens(local_mmap_path: str | Path, dtype: np.dtype) -> np.memma
 def load_text_splits_from_hf(
     dataset_name: str,
     train_split: str,
-    eval_split: str,
+    eval_split: str | None,
     dataset_config: str | None = None,
     text_field: str = "text",
     cache_dir: Path | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str] | None]:
 
     kwargs = dict(
         path=dataset_name,
@@ -184,9 +184,12 @@ def load_text_splits_from_hf(
         cache_dir=cache_dir,
     )
     train_ds = load_dataset(split=train_split, **kwargs)  # type: ignore[index]
-    eval_ds = load_dataset(split=eval_split, **kwargs)  # type: ignore[index]
     train_texts = [x[text_field] for x in train_ds]  # type: ignore[index]
-    eval_texts = [x[text_field] for x in eval_ds]  # type: ignore[index]
+
+    eval_texts = None
+    if eval_split is not None:
+        eval_ds = load_dataset(split=eval_split, **kwargs)  # type: ignore[index]
+        eval_texts = [x[text_field] for x in eval_ds]  # type: ignore[index]
 
     return train_texts, eval_texts
 
@@ -346,11 +349,11 @@ class DistributedEvalSampler(Sampler[int]):
 # ============================================================
 def make_tokenized_dataset(
     dataset_id: DatasetIdentity,
-    dataset_registry: DatasetRegistry,
     local_train_mmap_path: Path,
-    local_eval_mmap_path: Path,
     local_hf_cache_dir: Path,
-) -> DatasetArtifactsDir:
+    local_eval_mmap_path: Path | None = None,
+    dataset_registry: DatasetRegistry | None = None,
+) -> tuple[DatasetArtifactsDir, TokenizedDatasetInfo]:
     """
     TODO
     """
@@ -380,9 +383,6 @@ def make_tokenized_dataset(
     # (efficient random access without loading all tokens into RAM)
     # Note: for large datasets, this may take time and disk space on first run,
     # but subsequent runs will be fast and efficient due to memory-mapping.
-    local_train_mmap_path = local_train_mmap_path
-    local_eval_mmap_path = local_eval_mmap_path
-
     total_train_tokens = build_memmap_tokens(
         token_mmap_path=local_train_mmap_path,
         texts=train_texts,
@@ -392,16 +392,18 @@ def make_tokenized_dataset(
         append_eos=True,
     )
 
-    total_eval_tokens = build_memmap_tokens(
-        token_mmap_path=local_eval_mmap_path,
-        texts=eval_texts,
-        encode_fn=encode_fn,
-        eos_id=eos_id,
-        dtype=dtype,
-        append_eos=True,
-    )
+    total_eval_tokens = None
+    if eval_texts is not None and local_eval_mmap_path is not None:
+        total_eval_tokens = build_memmap_tokens(
+            token_mmap_path=local_eval_mmap_path,
+            texts=eval_texts,
+            encode_fn=encode_fn,
+            eos_id=eos_id,
+            dtype=dtype,
+            append_eos=True,
+        )
 
-    # STEP 3: Register dataset in Data Registry
+    # STEP 3: Build dataset info
     dataset_info = TokenizedDatasetInfo(
         vocab_size=vocab_size,
         eos_id=eos_id,
@@ -410,17 +412,21 @@ def make_tokenized_dataset(
         total_eval_tokens=total_eval_tokens,
     )
 
-    artifacts_dir = dataset_registry.register_dataset(
-        src_path_train_bin=local_train_mmap_path,
-        src_path_eval_bin=local_eval_mmap_path,
-        identity=dataset_id,
-        dataset_info=dataset_info,
-        vocab_size=vocab_size,
-        total_train_tokens=total_train_tokens,
-        total_eval_tokens=total_eval_tokens,
-    )
+    # STEP 4: Register dataset in Data Registry (if registry provided)
+    if dataset_registry is not None:
+        artifacts_dir = dataset_registry.register_dataset(
+            src_path_train_bin=local_train_mmap_path,
+            src_path_eval_bin=local_eval_mmap_path,
+            identity=dataset_id,
+            dataset_info=dataset_info,
+            vocab_size=vocab_size,
+            total_train_tokens=total_train_tokens,
+            total_eval_tokens=total_eval_tokens,
+        )
+    else:
+        artifacts_dir = DatasetArtifactsDir(root=local_train_mmap_path.parent)
 
-    return artifacts_dir
+    return artifacts_dir, dataset_info
 
 
 # ============================================================
@@ -475,19 +481,19 @@ class DataLoaderConfig(BaseJsonConfig):
 def make_dataloaders(
     # Token Mem-Map Info
     local_train_mmap_path: Path,
-    local_eval_mmap_path: Path,
     dtype: np.dtype,
     # Dataloader Config
     dataloader_config: DataLoaderConfig,
+    # Optional eval
+    local_eval_mmap_path: Path | None = None,
 ) -> dict[str, Any]:
-    # DDP info for deterministic sampling and distributed eval; 
+    # DDP info for deterministic sampling and distributed eval;
     # defaults to single-GPU if not distributed (rank 0, world size 1)
     rank = get_global_rank()
     world_size = get_world_size()
 
     # STEP 1: Load token buffers using memory-mapping for efficient random access without loading all tokens into RAM
     train_tokens_buffer = load_memmap_tokens(local_train_mmap_path, dtype=dtype)
-    eval_tokens_buffer = load_memmap_tokens(local_eval_mmap_path, dtype=dtype)
 
     # STEP 2: Create deterministic train schedule (token-budget driven)
     ## a) Train DS: deterministic random windows, with global sample index offset for resume
@@ -504,20 +510,10 @@ def make_dataloaders(
         world_size=world_size,
     )
 
-    ## b) Eval DS: sequential non-overlapping chunks
-    eval_ds = SequentialTokenChunks(
-        eval_tokens_buffer,
-        seq_len=dataloader_config.seq_len,
-    )
-
-    eval_sampler = None
-    if is_distributed():
-        eval_sampler = DistributedEvalSampler(len(eval_ds), rank, world_size)
-
     # STEP 3: Create PyTorch dataloaders
     dl_kwargs = dataloader_config.get_performance_kwargs()
-    dl_kwargs["shuffle"] = False  
-    # NOTE: shuffle must stay False when sampler is provided 
+    dl_kwargs["shuffle"] = False
+    # NOTE: shuffle must stay False when sampler is provided
     # and windows are already deterministic/randomized
 
     train_dl = DataLoader(
@@ -525,12 +521,26 @@ def make_dataloaders(
         batch_size=dataloader_config.train_batch_size,
         **dl_kwargs,
     )
-    eval_dl = DataLoader(
-        eval_ds,
-        batch_size=dataloader_config.eval_batch_size,
-        sampler=eval_sampler,
-        **dl_kwargs,
-    )
+
+    ## b) Eval DS: sequential non-overlapping chunks (if eval data exists)
+    eval_dl = None
+    if local_eval_mmap_path is not None:
+        eval_tokens_buffer = load_memmap_tokens(local_eval_mmap_path, dtype=dtype)
+        eval_ds = SequentialTokenChunks(
+            eval_tokens_buffer,
+            seq_len=dataloader_config.seq_len,
+        )
+
+        eval_sampler = None
+        if is_distributed():
+            eval_sampler = DistributedEvalSampler(len(eval_ds), rank, world_size)
+
+        eval_dl = DataLoader(
+            eval_ds,
+            batch_size=dataloader_config.eval_batch_size,
+            sampler=eval_sampler,
+            **dl_kwargs,
+        )
 
     return {
         "train": train_dl,
@@ -565,7 +575,9 @@ class LocalCachePaths:
     def train_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
         return self.dataset_dir(dataset_id) / DATASET_FILES.train_tokens
 
-    def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path:
+    def eval_mmap_path(self, dataset_id: DatasetIdentity) -> Path | None:
+        if dataset_id.eval_split is None:
+            return None
         return self.dataset_dir(dataset_id) / DATASET_FILES.eval_tokens
 
     def cleanup_if_tmp_dir(self) -> None:
@@ -622,12 +634,12 @@ def get_dataloaders(
             logger.log_tokenization(
                 "Token memmaps not found in Data Registry, proceeding with local preparation and upload..."
             )
-            artifacts_dir = make_tokenized_dataset(
+            artifacts_dir, _ = make_tokenized_dataset(
                 dataset_id=dataset_id,
-                dataset_registry=dataset_registry,
                 local_train_mmap_path=train_mmap_cache_path,
-                local_eval_mmap_path=eval_mmap_cache_path,
                 local_hf_cache_dir=cache_paths.hf_cache_dir,
+                local_eval_mmap_path=eval_mmap_cache_path,
+                dataset_registry=dataset_registry,
             )
             cache_paths.cleanup_if_tmp_dir()
 
@@ -651,16 +663,17 @@ def get_dataloaders(
         "Creating deterministic training dataset with random windows "
         "and sequential evaluation dataset with non-overlapping chunks..."
     )
+    eval_bin = artifacts_dir.eval_bin if artifacts_dir.eval_bin.exists() else None
     dls = make_dataloaders(
         local_train_mmap_path=artifacts_dir.train_bin,
-        local_eval_mmap_path=artifacts_dir.eval_bin,
         dtype=dtype,
         dataloader_config=dataloader_config,
+        local_eval_mmap_path=eval_bin,
     )
 
+    eval_info = f" and {len(dls['eval'])} evaluation batches" if dls["eval"] is not None else ""
     logger.log_dataloader_creation(
-        f"Prepared dataloaders with {len(dls['train'])} training batches and "
-        f"{len(dls['eval'])} evaluation batches."
+        f"Prepared dataloaders with {len(dls['train'])} training batches{eval_info}."
     )
 
     # STEP 5: Prepare output info

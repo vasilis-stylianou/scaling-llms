@@ -18,7 +18,7 @@ class TokenizedDatasetInfo(BaseJsonConfig):
     eos_id: int
     dtype: str
     total_train_tokens: int
-    total_eval_tokens: int
+    total_eval_tokens: int | None = None
 
 class DatasetArtifactsDir(ArtifactsDir):
 
@@ -80,23 +80,25 @@ class DatasetArtifacts(Artifacts):
     def write_dataset(
         self,
         src_train: Path,
-        src_eval: Path,
+        src_eval: Path | None = None,
         dataset_info: TokenizedDatasetInfo | None = None,
     ) -> DatasetArtifactsDir:
         # Validate source paths
         src_train = Path(src_train).expanduser().resolve()
-        src_eval = Path(src_eval).expanduser().resolve()
         if not src_train.exists():
             raise FileNotFoundError(f"Train bin not found: {src_train}")
-        if not src_eval.exists():
-            raise FileNotFoundError(f"Eval bin not found: {src_eval}")
+        if src_eval is not None:
+            src_eval = Path(src_eval).expanduser().resolve()
+            if not src_eval.exists():
+                raise FileNotFoundError(f"Eval bin not found: {src_eval}")
 
         # Create new artifacts directory for the dataset
         artifacts_dir = self.make_new_dir()
 
         # Copy dataset files to local artifacts directory
         shutil.copy2(src_train, artifacts_dir.train_bin)
-        shutil.copy2(src_eval, artifacts_dir.eval_bin)
+        if src_eval is not None:
+            shutil.copy2(src_eval, artifacts_dir.eval_bin)
 
         if dataset_info is not None:
             log_as_json(dataset_info, artifacts_dir.dataset_info)

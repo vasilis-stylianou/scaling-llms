@@ -10,4 +10,4 @@ __pycache__
 configs/
 tests/
 docs/
-notebooks/debug/
+notebooks/

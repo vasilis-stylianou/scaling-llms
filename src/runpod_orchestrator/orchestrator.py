@@ -12,7 +12,7 @@ from runpod_orchestrator.config import (
     COMMAND_LOGS_DIR_REMOTE,
     EXPERIMENT_CONFIGS_PY_REMOTE,
     IDENTITY_FILE,
-    REPO_DIR,
+    REMOTE_REPO_DIR,
     RUNPOD_API_KEY,
     SCRIPT_YAML_REMOTE,
     PodOrchestratorConfig,
@@ -29,6 +29,17 @@ def _slugify(text: str) -> str:
     """Convert an arbitrary string into a safe identifier (underscores, no spaces)."""
     return re.sub(r"[^a-zA-Z0-9_]", "_", text).strip("_") or "job"
 
+def get_local_repo_dir() -> Path:
+    """Get the local repository directory by running 'git rev-parse'."""
+    try:
+        output = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=Path("."),
+            text=True
+        ).strip()
+        return Path(output)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Failed to get local repository directory. Ensure this is run within a git repository.") from e
 
 class PodOrchestrator(PodSSHOperator, PodManager):
     """
@@ -51,7 +62,7 @@ class PodOrchestrator(PodSSHOperator, PodManager):
         self._config = config
         self.pod_spec = config.pod_spec
         self.workflow = config.workflow
-        self.repo_dir = REPO_DIR
+        self.repo_dir = REMOTE_REPO_DIR
 
         ssh = SSHClient(IDENTITY_FILE)
 
@@ -155,16 +166,10 @@ class PodOrchestrator(PodSSHOperator, PodManager):
             raise ValueError("No active connection available.")
 
         # Install ipykernel to enable Jupyter support in VSCode remote sessions
-        self.install_ipykernel(conn)
+        # self.install_ipykernel(conn)
 
         # Add remote host to local SSH config
-        local_repo_path = Path(
-            subprocess.check_output(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=Path("."),
-                text=True
-            ).strip()
-        )
+        local_repo_path = get_local_repo_dir()
         script_path = (local_repo_path / "scripts" / "setup_runpod_host.sh").as_posix()
         subprocess.run(
             ["bash", str(script_path), conn.public_ip, str(conn.ssh_port)],

@@ -18,7 +18,7 @@ class DatasetIdentity(BaseJsonConfig, EntityIdentity):
     dataset_name: str
     dataset_config: str | None
     train_split: str
-    eval_split: str
+    eval_split: str | None
     tokenizer_name: str
     text_field: str
 
@@ -30,12 +30,13 @@ class DatasetIdentity(BaseJsonConfig, EntityIdentity):
             return x.replace("/", "_").replace(":", "_")
 
         cfg = self.dataset_config if self.dataset_config else "none"
+        eval_s = norm(self.eval_split) if self.eval_split else "none"
 
         return (
             f"{norm(self.dataset_name)}"
             f"__cfg={norm(cfg)}"
             f"__train={norm(self.train_split)}"
-            f"__eval={norm(self.eval_split)}"
+            f"__eval={eval_s}"
             f"__tok={norm(self.tokenizer_name)}"
             f"__field={norm(self.text_field)}"
         )

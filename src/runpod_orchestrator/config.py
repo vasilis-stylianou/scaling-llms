@@ -19,7 +19,7 @@ COMMAND_LOGS_DIR_REMOTE = "/workspace/command_logs"
 SCRIPT_YAML_REMOTE = "/workspace/runtime_configs/run_experiments.yaml"
 EXPERIMENT_CONFIGS_PY_REMOTE = "/workspace/runtime_configs/experiment_configs.py"
 
-REPO_DIR = "/workspace/repos/scaling-llms"
+REMOTE_REPO_DIR = "/workspace/repos/scaling-llms"
 IDENTITY_FILE = "~/.ssh/runpod_key"
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 

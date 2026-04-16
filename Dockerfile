@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel AS base
 
 
 # Fix python for SSH sessions
@@ -16,6 +16,8 @@ RUN rm -rf /var/lib/apt/lists/* && \
         curl \
         unzip \
         openssh-server \
+        vim \
+        nano \
     && rm -rf /var/lib/apt/lists/*
 
 # ── rclone (pinned) ───────────────────────────────────────────────────────────
@@ -43,7 +45,18 @@ RUN mkdir -p \
     /workspace/runtime_configs \
     /workspace/command_logs
 
-# ── Python dependencies ───────────────────────────────────────────────────────
+# ── SSH server setup ──────────────────────────────────────────────────────────
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config \
+    && echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+
+EXPOSE 22
+
+
+# ── Training image ────────────────────────────────────────────────────────────
+FROM base AS training
+
 # Copy lockfiles first — this layer is cached across code-only changes
 WORKDIR /workspace/repos/scaling-llms
 
@@ -51,21 +64,22 @@ COPY pyproject.toml poetry.lock ./
 
 RUN poetry install --no-root --only main --no-ansi
 
-# ── Repo ──────────────────────────────────────────────────────────────────────
 COPY . .
 
 RUN poetry install --only main --no-ansi
 
-# ── SSH server setup ──────────────────────────────────────────────────────────
-RUN mkdir -p /var/run/sshd /root/.ssh \
-    && chmod 700 /root/.ssh \
-    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config \
-    && echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
-
 COPY scripts/docker_entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 22
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["sleep", "infinity"]
+
+
+# ── Dev image ─────────────────────────────────────────────────────────────────
+FROM base AS dev
+
+COPY scripts/docker_entrypoint_dev.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sleep", "infinity"]

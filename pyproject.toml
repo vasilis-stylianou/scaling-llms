@@ -33,6 +33,11 @@ torch = "2.2.2"
 torchvision = "0.17.2"
 torchaudio = "2.2.2"
 
+# Minimal deps for docker dev image (torch comes from base pytorch image)
+[tool.poetry.group.docker-dev.dependencies]
+ipykernel = ">=7.1.0,<8.0.0"
+pytest = ">=9.0.2,<10.0.0"
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

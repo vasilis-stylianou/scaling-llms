@@ -4,15 +4,16 @@ pod_spec:
   image_name: stylianouvasilis/scaling-llms:dev-1
   gpu_type_id: # NVIDIA A100-SXM4-80GB
   gpu_count: 0 
-  cpu_type_id: cpu5g-4-16
-  container_disk_in_gb: 40
-  volume_in_gb: 80
+  cpu_type_id: cpu5g-8-32 # 8 cores, 32GB RAM
+  container_disk_in_gb: 40 # ephemeral disk for container OS, software, etc.
+  volume_in_gb: 40 # persistent volume for datasets, model checkpoints, logs, etc.
   env:
     DATABASE_URL: ${DATABASE_URL}
     RUNPOD_PUBLIC_KEY: ${RUNPOD_PUBLIC_KEY}
     RCLONE_CONF_B64: ${RCLONE_CONF_B64}
+    GITHUB_TOKEN: ${GITHUB_TOKEN}
 
-workflow:
+workflow: 
   timeout_s: 300
   poll_s: 5
   terminate_on_failure: false

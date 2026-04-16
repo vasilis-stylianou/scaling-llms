@@ -88,7 +88,7 @@ class DatasetRegistry:
     def register_dataset(
         self,
         src_path_train_bin: str | Path,
-        src_path_eval_bin: str | Path,
+        src_path_eval_bin: str | Path | None,
         identity: DatasetIdentity,
         dataset_info: TokenizedDatasetInfo | None = None,
         **extra_params,
