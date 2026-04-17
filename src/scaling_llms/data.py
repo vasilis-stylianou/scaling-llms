@@ -436,7 +436,7 @@ def make_tokenized_dataset(
 class DataLoaderConfig(BaseJsonConfig):
     seq_len: int
     train_batch_size: int
-    eval_batch_size: int
+    eval_batch_size: int | None
     start_sample_idx: int
     seed: int
 
@@ -522,9 +522,9 @@ def make_dataloaders(
         **dl_kwargs,
     )
 
-    ## b) Eval DS: sequential non-overlapping chunks (if eval data exists)
+    ## b) Eval DS: sequential non-overlapping chunks (if eval data and batch size exist)
     eval_dl = None
-    if local_eval_mmap_path is not None:
+    if local_eval_mmap_path is not None and dataloader_config.eval_batch_size is not None:
         eval_tokens_buffer = load_memmap_tokens(local_eval_mmap_path, dtype=dtype)
         eval_ds = SequentialTokenChunks(
             eval_tokens_buffer,
