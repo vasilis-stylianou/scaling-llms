@@ -1,5 +1,7 @@
 import math
 import json
+from pathlib import Path
+
 import pandas as pd
 from scaling_llms.registries.runs.artifacts import RunArtifactsDir
 from scaling_llms.registries.runs.metadata import RunIdentity
@@ -174,11 +176,18 @@ class StepMetricsReader:
     # --- Internal methods ---
     def _get_run_name2jsonl_reader(self):
         df_runs = self._run_reg.get_runs_as_df(experiment_name=self.experiment_name)
-        artifacts_root = self._run_reg.artifacts.root
         run_name2jsonl_reader = dict()
         for row in df_runs.itertuples(index=False):
-            run_artifacts_dir = RunArtifactsDir(artifacts_root / row.artifacts_path)
-            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(run_artifacts_dir.metrics)
+            artifacts_dir = RunArtifactsDir(
+                self._run_reg.artifacts.get_absolute_path(row.artifacts_path)
+            )
+            for cat in METRIC_CATS.as_list():
+                rel_file = Path(row.artifacts_path) / "metrics" / f"{cat}.jsonl"
+                try:
+                    self._run_reg.artifacts.get_file(rel_file, pull=True)
+                except FileNotFoundError:
+                    pass
+            run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(artifacts_dir.metrics)
         return run_name2jsonl_reader
     
     

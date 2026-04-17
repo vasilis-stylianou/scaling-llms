@@ -12,6 +12,9 @@ class ArtifactsSyncHooks:
     def pull_remote_to_local(self, relative_artifacts_path: str | Path) -> None:
         raise NotImplementedError
 
+    def pull_remote_file_to_local(self, relative_file_path: str | Path) -> None:
+        raise NotImplementedError
+
 
 class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
     _DEFAULT_COMMON_ARGS = [
@@ -170,6 +173,20 @@ class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
         )
         self._run_rclone(command)
 
+    def _copy_remote_file_to_local(self, remote_file_path: str, local_file_path: Path) -> None:
+        if not self._remote_exists(remote_file_path):
+            raise FileNotFoundError(f"Remote file does not exist: {remote_file_path}")
+
+        local_file_path = Path(local_file_path).expanduser().resolve()
+        local_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        command = self._build_command(
+            mode="copyto",
+            src=remote_file_path,
+            dst=str(local_file_path),
+        )
+        self._run_rclone(command)
+
     # ---------- public API ----------
 
     def push_local_to_remote(self, relative_artifacts_path: str | Path) -> None:
@@ -183,6 +200,12 @@ class RCloneArtifactsSyncHooks(ArtifactsSyncHooks):
         local_artifacts_path = self._local_path_for(rel)
         remote_path = self._remote_path_for(rel)
         self._sync_remote_to_local(remote_path, local_artifacts_path)
+
+    def pull_remote_file_to_local(self, relative_file_path: str | Path) -> None:
+        rel = self._validate_relative_artifacts_path(relative_file_path)
+        local_file_path = self._local_path_for(rel)
+        remote_file_path = self._remote_path_for(rel)
+        self._copy_remote_file_to_local(remote_file_path, local_file_path)
 
 
 def make_sync_hooks(

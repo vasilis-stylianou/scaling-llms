@@ -106,8 +106,8 @@ class RunArtifacts(Artifacts):
             self.sync_hooks.pull_remote_to_local(relative_artifacts_path)
 
     def get_dir(
-        self, 
-        relative_path: str | Path, 
+        self,
+        relative_path: str | Path,
         *,
         raise_if_not_found: bool = True,
         pull: bool = True,
@@ -120,6 +120,26 @@ class RunArtifacts(Artifacts):
             return None
 
         return artifacts_dir
+
+    def get_file(
+        self,
+        relative_path: str | Path,
+        *,
+        pull: bool = True,
+    ) -> Path:
+        """
+        Pull and return the local path to a single file within the artifacts root.
+
+        relative_path should point to a file, e.g. "experiment/run_id/metrics/train.jsonl".
+        """
+        abs_path = self.get_absolute_path(relative_path)
+        if pull and self.sync_hooks is not None:
+            self.sync_hooks.pull_remote_file_to_local(relative_path)
+
+        if not abs_path.is_file():
+            raise FileNotFoundError(f"Artifact file not found: {abs_path}")
+
+        return abs_path
 
     def delete_dir(
         self, 
