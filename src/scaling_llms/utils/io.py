@@ -1,7 +1,11 @@
-from dataclasses import asdict, is_dataclass
+import importlib
 import json
 import os
+import subprocess
+import sys
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 
 import numpy as np
@@ -112,3 +116,56 @@ def read_json(path: str | Path) -> dict[str, Any]:
         data = json.load(f)
 
     return _json_object_hook(data)
+
+
+def load_module_from_path(
+    file_path: str | Path,
+    module_name: str | None = None,
+) -> ModuleType:
+
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Module file not found: {path}")
+
+    # Default module name: <parent_dir>__<file_stem>
+    # Example: /a/b/foo/bar.py -> foo__bar
+    name = module_name or f"{path.parent.name}__{path.stem}"
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module from: {path}")
+
+    module = importlib.util.module_from_spec(spec)
+
+    # Ensure imports of other files in the same directory
+    # resolve correctly during execution
+    # (e.g. `from constants import ...`) 
+    parent_dir = str(path.parent)
+    add_to_sys_path = parent_dir not in sys.path 
+    if parent_dir not in sys.path:
+        # Only modify sys.path if the parent directory is not already in it
+        sys.path.insert(0, parent_dir)
+
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if add_to_sys_path:
+            sys.path.remove(parent_dir)
+
+    return module
+
+
+def get_local_repo_dir() -> Path:
+    """Get the local repository directory by running 'git rev-parse'."""
+    try:
+        output = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=Path("."),
+            text=True
+        ).strip()
+        return Path(output)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            "Failed to get local repository directory. " \
+            "Ensure this is run within a git repository."
+            ) from e

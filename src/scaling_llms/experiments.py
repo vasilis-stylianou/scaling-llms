@@ -26,6 +26,7 @@ from scaling_llms.registries import (
 )
 from scaling_llms.tracking.run import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
+from scaling_llms.utils.io import load_module_from_path
 from scaling_llms.utils.training import make_adamw_optimizer, make_lr_scheduler, set_determinism
 
 # =============================================================================
@@ -743,20 +744,7 @@ class ExperimentConfig:
 
     @classmethod
     def load_from_file(cls, file_path: str) -> "ExperimentConfig":
-        import importlib.util
-        from pathlib import Path
-
-        path = Path(file_path).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"Experiment config file not found: {path}")
-
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Could not load experiment config from: {path}")
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
+        module = load_module_from_path(file_path)
         return cls.from_module(module)
     
 

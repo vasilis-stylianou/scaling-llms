@@ -6,6 +6,7 @@ import subprocess
 from dotenv import load_dotenv
 import re
 
+from scaling_llms.utils.io import get_local_repo_dir
 from scaling_llms.utils.loggers import setup_console_logging
 from runpod_orchestrator.clients.ssh import SSHClient
 from runpod_orchestrator.config import (
@@ -29,17 +30,6 @@ def _slugify(text: str) -> str:
     """Convert an arbitrary string into a safe identifier (underscores, no spaces)."""
     return re.sub(r"[^a-zA-Z0-9_]", "_", text).strip("_") or "job"
 
-def get_local_repo_dir() -> Path:
-    """Get the local repository directory by running 'git rev-parse'."""
-    try:
-        output = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=Path("."),
-            text=True
-        ).strip()
-        return Path(output)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError("Failed to get local repository directory. Ensure this is run within a git repository.") from e
 
 class PodOrchestrator(PodSSHOperator, PodManager):
     """

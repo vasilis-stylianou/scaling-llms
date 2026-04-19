@@ -41,15 +41,31 @@ def _require_dict(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
+def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @dataclass(frozen=True)
 class PodOrchestratorConfig:
     pod_spec: PodSpec
     workflow: WorkflowOptions = field(default_factory=WorkflowOptions)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> PodOrchestratorConfig:
+    def from_yaml(
+        cls,
+        path: str | Path,
+        overrides: dict[str, Any] | None = None,
+    ) -> PodOrchestratorConfig:
         config_path = Path(path).expanduser().resolve()
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if overrides:
+            data = _deep_merge(data, overrides)
 
         pod_data = _require_dict(data, "pod_spec")
         workflow_data = data.get("workflow", {}) or {}
