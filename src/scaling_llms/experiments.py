@@ -81,7 +81,7 @@ def build_trainer(
     scaler = torch.cuda.amp.GradScaler(
         enabled=(cfg.precision == "fp16") and cfg.device.startswith("cuda")
     )
-    optimizer = make_adamw_optimizer(model, cfg)
+    optimizer = make_adamw_optimizer(raw_model, cfg)
     # optimizer = torch.optim.AdamW(
     #     model.parameters(),
     #     lr=cfg.lr,
