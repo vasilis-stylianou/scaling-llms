@@ -14,7 +14,8 @@ DATASET_KWARGS = dict(
 
 DATALOADER_KWARGS = dict(
     seq_len=1024,
-    train_batch_size=64,
+    train_batch_size=64,          # micro-batch per GPU (hardware knob)
+    # train_global_batch_size=64,   # effective batch (scientific invariant); accum_steps derived at runtime
     eval_batch_size=None,
     start_sample_idx=0,
     seed=42
@@ -49,12 +50,11 @@ CONSTANT_GPT_HPARAMS = dict(
 # TRAINER CONFIGS
 # -------------------------
 CONSTANT_TRAINER_ARGS = dict(
-    num_steps=200, 
+    num_steps=500, 
     beta1=0.9,
     beta2=0.95,
     weight_decay=0.0,
     precision="bf16",
-    accum_steps=1,
     grad_clip_norm=1.0,
     device="auto",
     use_compile=False,
@@ -65,11 +65,11 @@ CONSTANT_TRAINER_ARGS = dict(
     warmup_steps=0,
     min_lr_ratio=0.0,
     enable_tb=False,
-    net_log_freq=20,
+    net_log_freq=50,
     sys_log_freq=-1,
     eval_log_freq=-1,
-    ckpt_log_freq=-1,
-    keep_last_n=None,
+    ckpt_log_freq=250,
+    keep_last_n=1,
     best_eval_nll_tol=1e-4,
     enable_cuda_timer=False,
 )
@@ -80,4 +80,4 @@ CONSTANT_TRAINER_ARGS = dict(
 # -------------------------
 BASE_WIDTH = 128  # your proxy width
 WIDTHS = [BASE_WIDTH, 256, 512, 1024]  # proxy + 3 transfer targets
-LOG2LRS = [-12, -10, -9.5, -9, -8.5, -8, -6]
+LOG2LRS = [-12, -10, -9.5, -9, -8.75, -8.5, -8] #, -6]

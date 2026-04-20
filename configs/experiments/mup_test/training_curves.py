@@ -11,6 +11,7 @@ from constants import (
     WIDTHS,
 )
 
+
 EXPERIMENT_NAME = f"{EXPERIMENT_NAME_PREFIX}_training_curves"
 
 RUNS = []
@@ -29,9 +30,10 @@ for use_mup, width, log2lr in product([False, True], WIDTHS, LOG2LRS):
     RUNS.append({
         "method": "start",
         "run_name": run_name,
-        "overwrite": True,
+        "overwrite": False,
         "dataset_kwargs": DATASET_KWARGS,
         "dataloader_kwargs": DATALOADER_KWARGS,
         "trainer_kwargs": trainer_kwargs,
-        "gpt_hparams": gpt_hparams
+        "gpt_hparams": gpt_hparams,
+        "ignore_if_run_exists": True,   
     })
