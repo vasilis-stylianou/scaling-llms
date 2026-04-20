@@ -14,7 +14,7 @@ DATASET_KWARGS = dict(
 
 DATALOADER_KWARGS = dict(
     seq_len=1024,
-    train_batch_size=32,
+    train_batch_size=64,
     eval_batch_size=None,
     start_sample_idx=0,
     seed=42
@@ -80,4 +80,4 @@ CONSTANT_TRAINER_ARGS = dict(
 # -------------------------
 BASE_WIDTH = 128  # your proxy width
 WIDTHS = [BASE_WIDTH, 256, 512, 1024]  # proxy + 3 transfer targets
-LOG2LRS = [-12, -11, -10, -9.5, -9, -8.5, -8, -7]
+LOG2LRS = [-12, -10, -9.5, -9, -8.5, -8, -6]
