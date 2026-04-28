@@ -1,0 +1,24 @@
+experiment_config: /workspace/runtime_configs/experiment_configs.py 
+cleanup_after_sync: false  
+# don't delete local artifacts after each run syncs, 
+# since we might want to inspect them when working in dev mode
+
+registries:
+  database_url_env_name: DATABASE_URL
+  runs:
+    artifacts_root: /workspace/artifacts/dev/runs
+    table_name: dev_runs
+    sync_hooks_type: rclone
+    sync_hooks_args: 
+      remote_rclone_name: r2
+      remote_artifacts_root: scaling-llms/dev/runs
+      global_args: ["--s3-no-check-bucket"]
+
+  datasets:
+    artifacts_root: /workspace/artifacts/dev/datasets
+    table_name: dev_datasets
+    sync_hooks_type: rclone
+    sync_hooks_args:
+      remote_rclone_name: r2
+      remote_artifacts_root: scaling-llms/dev/datasets
+      global_args: ["--s3-no-check-bucket"]

@@ -25,6 +25,8 @@ class SSHClient:
         - execute a shell command on the remote pod over SSH and return result
     scp_to_pod(conn, local_path, remote_path, check=True, timeout_s=None) -> CompletedProcess[str]
         - upload a local file to the remote pod using SCP
+    scp_dir_to_pod(conn, local_dir, remote_parent, check=True, timeout_s=None) -> CompletedProcess[str]
+        - upload a local directory recursively to the remote pod using SCP
     probe_connectivity(conn, timeout_s=10) -> bool
         - check if the pod is reachable over SSH by running a simple command
     shell_quote(value) -> str
@@ -120,6 +122,41 @@ class SSHClient:
             "-o", "UserKnownHostsFile=/dev/null",
             str(resolved_local_path),
             f"root@{conn.public_ip}:{remote_path}",
+        ]
+        return subprocess.run(
+            cmd,
+            text=True,
+            capture_output=True,
+            check=check,
+            timeout=timeout_s,
+        )
+
+    def scp_dir_to_pod(
+        self,
+        conn: PodConnectionInfo,
+        local_dir: str | Path,
+        remote_parent: str,
+        *,
+        check: bool = True,
+        timeout_s: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """
+        Recursively copy a local directory into `remote_parent` on the pod.
+
+        The directory is placed at `{remote_parent}/{local_dir.name}` on the
+        remote. Uses `scp -r` under the hood.
+        """
+        self._validate(conn)
+        resolved_local_dir = Path(local_dir).expanduser().resolve()
+        cmd = [
+            "scp",
+            "-r",
+            "-i", self.identity_file,
+            "-P", str(conn.ssh_port),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            str(resolved_local_dir),
+            f"root@{conn.public_ip}:{remote_parent}",
         ]
         return subprocess.run(
             cmd,

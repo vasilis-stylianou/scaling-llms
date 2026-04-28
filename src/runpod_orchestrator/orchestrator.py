@@ -11,6 +11,7 @@ from scaling_llms.utils.loggers import setup_console_logging
 from runpod_orchestrator.clients.ssh import SSHClient
 from runpod_orchestrator.config import (
     COMMAND_LOGS_DIR_REMOTE,
+    RUNTIME_CONFIGS_DIR_REMOTE,
     EXPERIMENT_CONFIGS_PY_REMOTE,
     IDENTITY_FILE,
     REMOTE_REPO_DIR,
@@ -103,7 +104,8 @@ class PodOrchestrator(PodSSHOperator, PodManager):
     def run(
         self,
         script_yaml: str | Path,
-        experiment_configs_py: str | Path,
+        experiment_configs_dir: str | Path,
+        entry_config_filename: str,
         *,
         script_rel_path: str = "scripts/run_experiments.py",
         job_session_name: str | None = None,
@@ -113,12 +115,43 @@ class PodOrchestrator(PodSSHOperator, PodManager):
     ) -> str:
         conn = conn or self.conn
 
-        # Prepare files to upload
-        upload_files = [
-            (str(script_yaml), SCRIPT_YAML_REMOTE),
-            (str(experiment_configs_py), EXPERIMENT_CONFIGS_PY_REMOTE)
+        # Validate inputs
+        cfg_dir = Path(experiment_configs_dir).expanduser().resolve()
+        if not cfg_dir.is_dir():
+            raise NotADirectoryError(
+                f"experiment_configs_dir is not a directory: {cfg_dir}"
+            )
+        if not entry_config_filename.endswith(".py"):
+            raise ValueError(
+                f"entry_config_filename must end with '.py', got: {entry_config_filename}"
+            )
+        if "/" in entry_config_filename or "\\" in entry_config_filename:
+            raise ValueError(
+                f"entry_config_filename must be a bare filename (no path separators), "
+                f"got: {entry_config_filename}"
+            )
+        if not (cfg_dir / entry_config_filename).is_file():
+            raise FileNotFoundError(
+                f"Entry config file not found in directory: "
+                f"{cfg_dir / entry_config_filename}"
+            )
 
-        ]
+        # Upload YAML (single file) + full config package dir, then symlink
+        # the entry file to the stable path `EXPERIMENT_CONFIGS_PY_REMOTE`
+        # so the YAML's `experiment_config` key never needs to change.
+        # `load_module_from_path` calls `.resolve()` on the symlink and adds
+        # the real parent dir to sys.path, so sibling imports resolve.
+        self.upload_files(conn, [(str(script_yaml), SCRIPT_YAML_REMOTE)])
+        self.upload_directory(conn, cfg_dir, RUNTIME_CONFIGS_DIR_REMOTE)
+
+        entry_remote = (
+            f"{RUNTIME_CONFIGS_DIR_REMOTE.rstrip('/')}"
+            f"/{cfg_dir.name}/{entry_config_filename}"
+        )
+        self.ssh.run_command(
+            conn,
+            f"ln -sfn {entry_remote} {EXPERIMENT_CONFIGS_PY_REMOTE}",
+        )
 
         # Prepare run command
         if self.pod_spec.gpu_count > 1:
@@ -128,14 +161,12 @@ class PodOrchestrator(PodSSHOperator, PodManager):
                 f"{script_rel_path} {SCRIPT_YAML_REMOTE} --backend nccl"
             )
         else:
-            cmd =f"poetry run python {script_rel_path} {SCRIPT_YAML_REMOTE}"
-    
+            cmd = f"poetry run python {script_rel_path} {SCRIPT_YAML_REMOTE}"
+
         # Prepare job session and log path
         job_session_name = job_session_name or _slugify(self.pod_spec.name)
         log_path = Path(COMMAND_LOGS_DIR_REMOTE) / f"{job_session_name}.log"
-        
-        # Upload necessary files and launch the job
-        self.upload_files(conn, upload_files)
+
         return self.launch_tmux_job(
             conn,
             command=cmd,

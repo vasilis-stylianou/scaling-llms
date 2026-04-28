@@ -16,8 +16,12 @@ from runpod_orchestrator.specs import (
 
 
 COMMAND_LOGS_DIR_REMOTE = "/workspace/command_logs"
-SCRIPT_YAML_REMOTE = "/workspace/runtime_configs/run_experiments.yaml"
-EXPERIMENT_CONFIGS_PY_REMOTE = "/workspace/runtime_configs/experiment_configs.py"
+RUNTIME_CONFIGS_DIR_REMOTE = "/workspace/runtime_configs"
+SCRIPT_YAML_REMOTE = f"{RUNTIME_CONFIGS_DIR_REMOTE}/run_experiments.yaml"
+# Stable path the YAML's `experiment_config` key always references.
+# After upload, this is symlinked to the chosen entry file inside the
+# uploaded package directory.
+EXPERIMENT_CONFIGS_PY_REMOTE = f"{RUNTIME_CONFIGS_DIR_REMOTE}/experiment_configs.py"
 
 REMOTE_REPO_DIR = "/workspace/repos/scaling-llms"
 IDENTITY_FILE = "~/.ssh/runpod_key"

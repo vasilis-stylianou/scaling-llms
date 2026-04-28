@@ -1,0 +1,25 @@
+experiment_config: /workspace/runtime_configs/experiment_configs.py 
+cleanup_after_sync: true   
+# delete local artifacts after each run syncs,
+# otherwise we might run out of disk space when running many experiments, 
+# and in training mode we generally don't need to inspect local artifacts
+
+registries:
+  database_url_env_name: DATABASE_URL
+  runs:
+    artifacts_root: /workspace/artifacts/runs
+    table_name: runs
+    sync_hooks_type: rclone
+    sync_hooks_args: 
+      remote_rclone_name: r2
+      remote_artifacts_root: scaling-llms/runs
+      global_args: ["--s3-no-check-bucket"]
+
+  datasets:
+    artifacts_root: /workspace/artifacts/datasets
+    table_name: datasets
+    sync_hooks_type: rclone
+    sync_hooks_args:
+      remote_rclone_name: r2
+      remote_artifacts_root: scaling-llms/datasets
+      global_args: ["--s3-no-check-bucket"]

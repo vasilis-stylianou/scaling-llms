@@ -1,0 +1,21 @@
+# Create Pod Args
+pod_spec:
+  name: training-pod
+  image_name: stylianouvasilis/scaling-llms:training-1
+  gpu_type_id: NVIDIA A100-SXM4-80GB
+  gpu_count: 1 
+  container_disk_in_gb: 40 # ephemeral disk for container OS, software, etc.
+  volume_in_gb: 80 # persistent volume for datasets, model checkpoints, logs, etc.
+  env:
+    DATABASE_URL: ${DATABASE_URL}
+    RUNPOD_PUBLIC_KEY: ${RUNPOD_PUBLIC_KEY}
+    RCLONE_CONF_B64: ${RCLONE_CONF_B64}
+    GITHUB_TOKEN: ${GITHUB_TOKEN}
+
+workflow: 
+  timeout_s: 300
+  poll_s: 5
+  terminate_on_failure: false
+  retry_policy:
+    max_attempts: 5
+    retry_base_s: 2.0

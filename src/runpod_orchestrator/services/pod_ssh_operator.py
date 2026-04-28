@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+import shutil
 from pathlib import Path
 from string import Template
 
@@ -200,6 +201,47 @@ class PodSSHOperator:
                     local_path=local,
                     remote_path=remote_path,
                 )
+        except Exception as exc:
+            raise CommandError(error_prefix) from exc
+
+    def upload_directory(
+        self,
+        conn: PodConnectionInfo,
+        local_dir: str | Path,
+        remote_parent: str,
+    ) -> None:
+        """
+        Recursively upload a local directory into `remote_parent` on the pod.
+
+        Creates `remote_parent` if missing, removes any pre-existing copy at
+        `{remote_parent}/{local_dir.name}`, strips local `__pycache__` dirs to
+        avoid shipping compiled artifacts, then runs `scp -r`.
+        """
+        local = Path(local_dir).expanduser().resolve()
+        if not local.is_dir():
+            raise FileNotFoundError(f"Upload directory not found: {local}")
+
+        for pyc in local.rglob("__pycache__"):
+            shutil.rmtree(pyc, ignore_errors=True)
+
+        remote_parent = remote_parent.rstrip("/")
+        remote_target = f"{remote_parent}/{local.name}"
+        error_prefix = f"Failed to upload directory to pod {conn.pod_id}"
+        try:
+            self.ssh.run_command(
+                conn,
+                f"mkdir -p {shlex.quote(remote_parent)}",
+            )
+            self.ssh.run_command(
+                conn,
+                f"rm -rf {shlex.quote(remote_target)}",
+            )
+            logger.info("[upload] %s -> %s", local, remote_target)
+            self.ssh.scp_dir_to_pod(
+                conn,
+                local_dir=local,
+                remote_parent=remote_parent,
+            )
         except Exception as exc:
             raise CommandError(error_prefix) from exc
 

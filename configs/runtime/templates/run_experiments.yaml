@@ -1,0 +1,31 @@
+experiment_config: 
+# (str) Required. Config for the experiment to run. 
+# Should be a .py file containing a variable `EXPERIMENT_CONFIG` 
+# which is a dict of config values for the experiment.
+
+cleanup_after_sync:  
+# (bool) if true, delete local artifacts after each run syncs
+
+registries:
+# Configs for registries to use for runs and datasets metadata and artifacts management.
+  database_url_env_name: DATABASE_URL
+  # (str) Name of the env variable in .env containing the database URL for runs and datasets metadata management. 
+  # The database should be accessible from the Pod. Can be a local or cloud-hosted database.
+
+  runs:
+    artifacts_root: # (str) Local path for run artifacts (logs, checkpoints, etc.)
+    table_name: # (str) Table name for runs metadata in the database
+    sync_hooks_type: # (str) if None, no sync; if rclone, use rclone
+    sync_hooks_args: 
+      remote_rclone_name: # (str) Name of the remote in rclone config for syncing run artifacts to remote storage
+      remote_artifacts_root: # (str) Remote path for run artifacts
+      global_args:  # (list) Global arguments for rclone
+
+  datasets:
+    artifacts_root: # (str) Local path for dataset artifacts
+    table_name: # (str) Table name for datasets metadata in the database
+    sync_hooks_type: # (str) if None, no sync; if rclone, use rclone
+    sync_hooks_args:
+      remote_rclone_name: # (str) Name of the remote in rclone config for syncing dataset artifacts to remote storage
+      remote_artifacts_root: # (str) Remote path for dataset artifacts
+      global_args:  # (list) Global arguments for rclone

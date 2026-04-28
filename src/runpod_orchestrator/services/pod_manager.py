@@ -296,6 +296,15 @@ class PodManager:
                 )
             pod_id = found.get("id") or found.get("_id")
 
+        url = (
+            f"https://console.runpod.io/pods?id={pod_id}"
+            if pod_id
+            else "https://console.runpod.io/pods"
+        )
+        logger.info(
+            "[create] Creating pod %s. Monitor logs at %s", pod_id, url
+        )
+
         return self.wait_for_ssh_ready(
             str(pod_id),
             timeout_s=timeout_s,

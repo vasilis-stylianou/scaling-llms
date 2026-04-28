@@ -1,0 +1,59 @@
+pod_spec:
+# Spec for the Pod to create. Maps to runpod's create_pod SDK args.
+  name:
+  # (str) Required. Name of the pod.
+
+  image_name:
+  # (str) Required. Docker image to run on the pod (e.g. user/repo:tag).
+
+  gpu_type_id:
+  # (str) GPU flavor id (e.g. NVIDIA A100-SXM4-80GB).
+  # Specify exactly one of gpu_type_id or cpu_type_id.
+
+  cpu_type_id:
+  # (str) CPU flavor id (e.g. cpu5g-8-32 -> <cpu flavor>-<num of CPU cores>-<RAM (GB)>).
+  # Specify exactly one of gpu_type_id or cpu_type_id.
+  # Cannot be combined with gpu_count > 0.
+
+  gpu_count:
+  # (int) Number of GPUs to attach to the pod. Required if gpu_type_id is set. Defaults to 1.
+
+  cloud_type:
+  # (str) Runpod cloud type (e.g. SECURE, COMMUNITY). Defaults to SECURE.
+
+  container_disk_in_gb:
+  # (int) Ephemeral disk size (GB) for container OS, software, etc. Defaults to 20.
+
+  volume_in_gb:
+  # (int) Persistent volume size (GB) for datasets, model checkpoints, logs, etc. Defaults to 40.
+
+  ports:
+  # (str) Ports to expose on the pod (e.g. "22/tcp"). Defaults to "22/tcp".
+
+  env:
+  # (dict) Environment variables to set on the pod.
+  # Values support ${VAR} expansion from the local environment / .env file.
+    DATABASE_URL:        # (str) Database URL for runs and datasets metadata management.
+    RUNPOD_PUBLIC_KEY:   # (str) Public SSH key authorized to access the pod.
+    RCLONE_CONF_B64:     # (str) Base64-encoded rclone config for syncing artifacts.
+    GITHUB_TOKEN:        # (str) GitHub token used to clone the repo onto the pod.
+
+workflow:
+# Options controlling the pod lifecycle workflow (create / stop / terminate).
+  timeout_s:
+  # (int) Max seconds to wait for a pod operation (e.g. SSH ready) before failing. Defaults to 900.
+
+  poll_s:
+  # (int) Seconds between polls when waiting on pod state transitions. Defaults to 5.
+
+  terminate_on_failure:
+  # (bool) If true, terminate the pod when create() fails after the connection is established.
+  # Defaults to false.
+
+  retry_policy:
+  # Retry policy for pod operations (create, stop, terminate).
+    max_attempts:
+    # (int) Max retry attempts for a pod operation. Defaults to 5.
+
+    retry_base_s:
+    # (float) Base seconds for exponential backoff between retries. Defaults to 2.0.
