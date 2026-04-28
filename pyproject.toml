@@ -28,12 +28,14 @@ notebook = ">=7.5.3,<8.0.0"
 ipywidgets = ">=8.1.8,<9.0.0"
 jupyter = ">=1.1.1,<2.0.0"
 pytest = ">=9.0.2,<10.0.0"
+plotly = "^6.7.0"
 
 torch = "2.2.2"
 torchvision = "0.17.2"
 torchaudio = "2.2.2"
 
 # Minimal deps for docker dev image (torch comes from base pytorch image)
+kaleido = "^1.2.0"
 [tool.poetry.group.docker-dev.dependencies]
 ipykernel = ">=7.1.0,<8.0.0"
 pytest = ">=9.0.2,<10.0.0"
