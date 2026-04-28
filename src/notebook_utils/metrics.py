@@ -63,16 +63,17 @@ def validate_init_nll(
 
 
 class StepMetricsReader:
-    def __init__(self, run_registry: RunRegistry, experiment_name: str):
+    def __init__(self, run_registry: RunRegistry, experiment_name: str, refresh: bool = False):
         self._run_reg = run_registry
         self.experiment_name = experiment_name
-        self.run_name2jsonl_reader = self._get_run_name2jsonl_reader()
-
+        self.run_name2jsonl_reader = self._get_run_name2jsonl_reader(refresh=refresh)
+        
     # --- API ---
     def list_run_names(self) -> list[str]:
         return list(self.run_name2jsonl_reader.keys())
 
-    def list_metric_names(self, run_name, metric_cat) -> list[str]:
+    def list_metric_names(self, run_name=None, metric_cat="train") -> list[str]:
+        run_name = run_name or self.list_run_names()[0]
         return (
             self.run_name2jsonl_reader[run_name]
             .get(metric_cat)
@@ -126,7 +127,6 @@ class StepMetricsReader:
             .iloc[0]
         )
     
-
     def get_metrics_df(
         self,
         run_name: str,
@@ -145,8 +145,6 @@ class StepMetricsReader:
         )
 
         return pd.merge(df1, df2, on=METRIC_SCHEMA.step, how=join_type, suffixes=suffixes)
-
-
 
     def get_metrics_df_by_run(
         self, 
@@ -174,17 +172,22 @@ class StepMetricsReader:
 
 
     # --- Internal methods ---
-    def _get_run_name2jsonl_reader(self):
+    def _get_run_name2jsonl_reader(self, refresh: bool = False):
+        # Iterate over runs in the experiment and create a JsonlTrackerReader 
+        # for each run that has metrics artifacts
         df_runs = self._run_reg.get_runs_as_df(experiment_name=self.experiment_name)
         run_name2jsonl_reader = dict()
         for row in df_runs.itertuples(index=False):
+            # Create local artifacts dir and pull metrics files if needed
             artifacts_dir = RunArtifactsDir(
                 self._run_reg.artifacts.get_absolute_path(row.artifacts_path)
             )
             for cat in METRIC_CATS.as_list():
                 rel_file = Path(row.artifacts_path) / "metrics" / f"{cat}.jsonl"
+                abs_file = self._run_reg.artifacts.get_absolute_path(rel_file)
+                pull = refresh or not abs_file.is_file() # pull if refresh=True or local file does not exist
                 try:
-                    self._run_reg.artifacts.get_file(rel_file, pull=True)
+                    self._run_reg.artifacts.get_file(rel_file, pull=pull)
                 except FileNotFoundError:
                     pass
             run_name2jsonl_reader[row.run_name] = JsonlTrackerReader(artifacts_dir.metrics)
