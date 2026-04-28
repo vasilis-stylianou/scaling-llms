@@ -435,7 +435,8 @@ def make_tokenized_dataset(
 @dataclass(frozen=True)
 class DataLoaderConfig(BaseJsonConfig):
     seq_len: int
-    train_batch_size: int
+    train_batch_size: int           # micro-batch per GPU (hardware tuning knob)
+    train_global_batch_size: int    # effective batch size across all GPUs × accum_steps (scientific invariant)
     eval_batch_size: int | None
     start_sample_idx: int
     seed: int
@@ -452,6 +453,19 @@ class DataLoaderConfig(BaseJsonConfig):
             raise ValueError(
                 f"start_sample_idx must be >= 0, got {self.start_sample_idx}"
             )
+        if self.train_batch_size <= 0:
+            raise ValueError(
+                f"train_batch_size must be > 0, got {self.train_batch_size}"
+            )
+        if self.train_global_batch_size <= 0:
+            raise ValueError(
+                f"train_global_batch_size must be > 0, got {self.train_global_batch_size}"
+            )
+        if self.train_global_batch_size % self.train_batch_size != 0:
+            raise ValueError(
+                f"train_global_batch_size ({self.train_global_batch_size}) must be "
+                f"divisible by train_batch_size ({self.train_batch_size})"
+            )
         if self.num_workers == 0:
             if self.prefetch_factor is not None:
                 raise ValueError(
@@ -462,6 +476,24 @@ class DataLoaderConfig(BaseJsonConfig):
                 raise ValueError(
                     "persistent_workers must be False when num_workers=0"
                 )
+
+    def derive_accum_steps(self, world_size: int) -> int:
+        """
+        Compute gradient accumulation steps needed to hit train_global_batch_size
+        on the current topology: accum_steps = global / (micro × world_size).
+        Raises if the target global batch is not achievable (not divisible).
+        """
+        if world_size <= 0:
+            raise ValueError(f"world_size must be > 0, got {world_size}")
+        denom = self.train_batch_size * world_size
+        if self.train_global_batch_size % denom != 0:
+            raise ValueError(
+                f"Cannot hit train_global_batch_size={self.train_global_batch_size} with "
+                f"train_batch_size={self.train_batch_size} × world_size={world_size} = {denom}. "
+                f"Adjust train_batch_size, world_size, or train_global_batch_size so that "
+                f"global is divisible by (micro × world_size)."
+            )
+        return self.train_global_batch_size // denom
 
     def get_performance_kwargs(self) -> dict:
         """

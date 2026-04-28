@@ -1,6 +1,6 @@
 from __future__ import annotations
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import math
 from pathlib import Path
@@ -43,9 +43,13 @@ class TrainerConfig(BaseJsonConfig):
     beta2: float = 0.95
     weight_decay: float = 0.1
     precision: str = "bf16"
-    accum_steps: int = 1
     grad_clip_norm: float | None = 1.0
     device: str = "auto"  # requested device: "auto" | "cpu" | "cuda"
+
+    # accum_steps is NOT user-set: it is derived at runtime from
+    # DataLoaderConfig.train_global_batch_size + train_batch_size + world_size.
+    # Kept on TrainerConfig so Trainer can read self.cfg.accum_steps at train time.
+    accum_steps: int = field(init=False, default=1)
 
     # Multi-GPU
     use_compile: bool = False
@@ -134,6 +138,13 @@ class TrainerConfig(BaseJsonConfig):
         # If schedule is none, min_lr_ratio doesn't matter.
         if self.lr_schedule == "none":
             self.min_lr_ratio = 1.0
+
+    @classmethod
+    def _postprocess_loaded_data(cls, data: dict[str, Any]) -> dict[str, Any]:
+        # Legacy migration: accum_steps used to be user-set; it is now derived at
+        # runtime from DataLoaderConfig.train_global_batch_size + world_size.
+        data.pop("accum_steps", None)
+        return data
 
 
 # -------------------------

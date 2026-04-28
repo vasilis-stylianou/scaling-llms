@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from scaling_llms.checkpointing import instantiate_model_from_run
 from scaling_llms.constants import CKPT_FILES, METADATA_FILES
 from scaling_llms.data import DataLoaderConfig, get_dataloaders, get_vocab_size
-from scaling_llms.distributed import barrier_if_distributed, is_distributed, is_main_process
+from scaling_llms.distributed import barrier_if_distributed, get_world_size, is_distributed, is_main_process
 from scaling_llms.models import GPTConfig, GPTModel
 from scaling_llms.registries import (
     DatasetIdentity,
@@ -198,16 +198,19 @@ def init_trainer(
     gpt_hparams: dict[str, Any],
     run: Run | None = None,
 ) -> Trainer:
-    # NOTE: in DDP only rank 0 prepares 
+    # NOTE: in DDP only rank 0 prepares
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
         dataloader_config=dl_cfg,
-        run=run, # if not None, used for printing logs 
+        run=run, # if not None, used for printing logs
     )
     if run is not None:
         run.log_metadata(dataset_id, METADATA_FILES.dataset_id, format="json")
         run.log_metadata(dl_cfg, METADATA_FILES.dataloader_config, format="json")
+
+    # Derive accum_steps from the invariant global batch + current topology.
+    trainer_cfg.accum_steps = dl_cfg.derive_accum_steps(get_world_size())
 
     raw_model = build_raw_model(
         seq_len=dl_cfg.seq_len,
@@ -243,6 +246,11 @@ def build_trainer_from_checkpoint(
         path=ckpt_run.artifacts_dir.metadata_path(METADATA_FILES.dataloader_config),
         overwrite_data={"start_sample_idx": trainer.consumed_samples},
     )
+
+    # Re-derive accum_steps against the current topology so the effective batch
+    # stays invariant across resumes with different GPU counts.
+    trainer.cfg.accum_steps = dl_cfg.derive_accum_steps(get_world_size())
+
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,
@@ -302,6 +310,10 @@ def build_trainer_from_checkpoint_transfer(
     # Build dataloaders and attach to trainer
     dataset_id = DatasetIdentity(**dataset_kwargs)
     dl_cfg = DataLoaderConfig(**dataloader_kwargs)
+
+    # Derive accum_steps from the invariant global batch + current topology.
+    trainer.cfg.accum_steps = dl_cfg.derive_accum_steps(get_world_size())
+
     dl_dict = get_dataloaders(
         dataset_id=dataset_id,
         dataset_registry=dataset_registry,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,8 +67,16 @@ def setup_console_logging(
         "datasets",
         "huggingface_hub",
         "huggingface_hub.utils._http",
+        "kaleido",
+        "choreographer",
+        "runpod",
     ):
         logging.getLogger(lib).setLevel(logging.WARNING)
+
+    # RunPod SDK also uses its own stdout logger (RunPodLogger) controlled by
+    # env vars rather than stdlib logging levels.
+    os.environ.setdefault("RUNPOD_LOG_LEVEL", "NOTSET")
+    os.environ.setdefault("RUNPOD_DEBUG_LEVEL", "NOTSET")
 
 @dataclass(slots=True)
 class BaseLogger:
@@ -343,7 +352,8 @@ class DataLogger(BaseLogger):
     def log_dataloader_config(self, dataloader_config) -> None:
         parts = [
             f"seq_len={dataloader_config.seq_len}",
-            f"train_batch_size={dataloader_config.train_batch_size}", 
+            f"train_batch_size={dataloader_config.train_batch_size}",
+            f"train_global_batch_size={dataloader_config.train_global_batch_size}",
             f"eval_batch_size={dataloader_config.eval_batch_size}",
             f"start_sample_idx={dataloader_config.start_sample_idx}",
         ]
