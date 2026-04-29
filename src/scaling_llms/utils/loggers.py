@@ -230,7 +230,11 @@ class TrainerLogger(BaseLogger):
         lr: float,
         step_idx: int,
         warmup_steps: int,
-        lr_schedule: str
+        lr_schedule: str,
+        weight_decay: float,
+        weight_decay_base_depth: int | None,
+        using_mup: bool,
+        mup_base_width: int | None,
     ) -> None:
         if step_idx == 0:
             self.info("Starting Training")
@@ -242,13 +246,25 @@ class TrainerLogger(BaseLogger):
             model_params, n_layer, n_embd, vocab_size
         )
         self.info(
-            "[device] device=%s | device_name=%s | world_size=%d | precision=%s", 
+            "[device] device=%s | device_name=%s | world_size=%d | precision=%s",
             device, device_name, world_size, precision
         )
         self.info(
             "[optimization] max_num_steps=%d | remaining_steps=%d | accum_steps=%d | lr=%.3e | warmup_steps=%d | lr_schedule=%s",
             max_num_steps, remaining_steps, accum_steps, lr, warmup_steps, lr_schedule
         )
+        
+        self.info(
+            "[weight_decay] weight_decay=%.3e | weight_decay_base_depth=%s",
+            weight_decay,
+            "None" if weight_decay_base_depth is None else f"{weight_decay_base_depth:d}",
+        )
+        self.info(
+            "[mup] using_mup=%s | mup_base_width=%s",
+            using_mup,
+            "None" if mup_base_width is None else f"{mup_base_width:d}",
+        )
+
 
     # High-frequency per-step logs should be DEBUG by default.
     def log_train_step(

@@ -69,6 +69,7 @@ class GPTConfig(BaseJsonConfig):
     # Normalization
     norm_type: str = "layernorm"
     norm_eps: float = 1e-5
+    embd_norm: bool | None = None  # Apply norm to token embeddings (pre pos-add). None → True under μP, else False.
 
     # Positional Encoding
     pos_encoding_type: str = "absolute"  # (or "rotary")
@@ -76,11 +77,12 @@ class GPTConfig(BaseJsonConfig):
 
     # Dropout
     attn_pdrop: float = 0.0  # On attention weights after softmax (regularizes attention routing)
-    embd_pdrop: float = 0.0   # On input embeddings after token + positional embedding sum
+    embd_pdrop: float = 0.0  # On input embeddings after token + positional embedding sum
     resid_pdrop: float = 0.0  # On sublayer outputs before adding back to residual stream (attn + MLP)
     
     # Attention
     attn_bias: bool = False
+    qk_norm: bool = False  # RMSNorm on Q and K per-head before RoPE/SDPA
 
     # LM Head
     tied_embeddings: bool = False
@@ -148,6 +150,10 @@ class GPTConfig(BaseJsonConfig):
             assert self.rope_theta > 0, "rope_theta must be positive for rotary embeddings"
             assert self.d_head % 2 == 0, "Rotary embeddings require d_head to be even"
 
+        # Embedding norm: default to enabled under μP, disabled otherwise
+        if self.embd_norm is None:
+            self.embd_norm = self.using_mup
+
         # Dropout
         for name, p in {
             "attn_pdrop": self.attn_pdrop,
@@ -182,8 +188,7 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return x * rms * self.weight
+        return F.rms_norm(x, (x.size(-1),), self.weight, self.eps)
 
 
 def make_norm(cfg: GPTConfig) -> nn.Module:
@@ -251,9 +256,14 @@ class CausalSelfAttention(nn.Module):
         self.pos_encoding_type = cfg.pos_encoding_type
         self.attn_bias = cfg.attn_bias
         self.attn_pdrop = cfg.attn_pdrop
+        self.qk_norm = cfg.qk_norm
 
         # 1. Fused QKV Projection
         self.c_attn = nn.Linear(cfg.n_embd, 3 * cfg.n_embd, bias=self.attn_bias)
+
+        if self.qk_norm:
+            self.q_norm = RMSNorm(self.d_head, eps=cfg.norm_eps)
+            self.k_norm = RMSNorm(self.d_head, eps=cfg.norm_eps)
 
         # 2. Output Projection
         self.c_proj = nn.Linear(cfg.n_embd, cfg.n_embd, bias=self.attn_bias)
@@ -294,6 +304,11 @@ class CausalSelfAttention(nn.Module):
 
         # Unpack: Results are now cleanly (B, n_head, T, d_head)
         q, k, v = qkv.unbind(0)
+
+        # Optional QK-norm (before RoPE — RoPE preserves norm anyway)
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         # Optional RoPE application
         if self.rope is not None:
@@ -424,6 +439,8 @@ class GPTModel(nn.Module):
             transformer_dict["wpe"] = nn.Embedding(cfg.seq_len, cfg.n_embd)
 
         ## A.2. The Stack (Dropout usually applied after embedding sum)
+        if cfg.embd_norm:
+            transformer_dict["norm_e"] = make_norm(cfg)
         transformer_dict["embd_drop"] = nn.Dropout(cfg.embd_pdrop)
 
         ## A.3. The Layers (ModuleList allows standard iteration)
@@ -494,6 +511,9 @@ class GPTModel(nn.Module):
 
         # 1. Embeddings
         x = self.transformer.wte(idx)  # Token Emb (B, T, D)
+
+        if self.cfg.embd_norm:
+            x = self.transformer.norm_e(x)
 
         if self.cfg.pos_encoding_type == "absolute":
             # Create Position Indices (0, 1, ..., T-1)

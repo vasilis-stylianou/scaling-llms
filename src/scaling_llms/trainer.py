@@ -20,6 +20,7 @@ from scaling_llms.distributed import (
 from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
 from scaling_llms.utils.training import (
+    LRSchedule,
     compute_grad_zero_frac,
     compute_grad_norm,
     compute_param_norm,
@@ -42,9 +43,11 @@ class TrainerConfig(BaseJsonConfig):
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.1
+    weight_decay_base_depth: int | None = None  # if set, scale wd by (base_depth / n_layer)**2
     precision: str = "bf16"
     grad_clip_norm: float | None = 1.0
     device: str = "auto"  # requested device: "auto" | "cpu" | "cuda"
+    fused_adamw: bool | None = None  # None = auto: True on CUDA, False on CPU
 
     # accum_steps is NOT user-set: it is derived at runtime from
     # DataLoaderConfig.train_global_batch_size + train_batch_size + world_size.
@@ -60,9 +63,10 @@ class TrainerConfig(BaseJsonConfig):
     iter_mode: Literal["infinite", "single-batch"] = "infinite"
 
     # LR Scheduler
-    lr_schedule: str | None = None  # "none", "cosine", "linear"
+    lr_schedule: str | None = None  # "none", "cosine", "linear", "trapezoidal"
     warmup_steps: int = 0
     min_lr_ratio: float = 0.0
+    decay_fraction: float = 0.0  # only used for "trapezoidal"
 
     # Trackers / Logging
     enable_tb: bool = False
@@ -90,6 +94,8 @@ class TrainerConfig(BaseJsonConfig):
             self.precision = "fp32"
             self.device_name = "cpu"
             self.use_compile = False
+            if self.fused_adamw is None:
+                self.fused_adamw = False
             return
 
         # In DDP each process owns one GPU identified by local_rank.
@@ -111,19 +117,32 @@ class TrainerConfig(BaseJsonConfig):
         elif "v100" in self.device_name:
             self.precision = "fp16"
 
+        if self.fused_adamw is None:
+            self.fused_adamw = True
+
     def _validate_lr_scheduler(self) -> None:
         if self.num_steps <= 0:
             raise ValueError(f"num_steps must be > 0; got {self.num_steps}")
         if self.lr <= 0:
             raise ValueError(f"lr must be > 0; got {self.lr}")
-
-        allowed = {"none", "cosine", "linear"}
-        if self.lr_schedule is None:
-            self.lr_schedule = "none"
-        if self.lr_schedule not in allowed:
+        if self.weight_decay < 0:
+            raise ValueError(f"weight_decay must be >= 0; got {self.weight_decay}")
+        if (
+            self.weight_decay_base_depth is not None
+            and self.weight_decay_base_depth <= 0
+        ):
             raise ValueError(
-                f"lr_schedule must be one of {sorted(allowed)}; got {self.lr_schedule}"
+                "weight_decay_base_depth must be > 0 when set; "
+                f"got {self.weight_decay_base_depth}"
             )
+
+        try:
+            LRSchedule(self.lr_schedule)
+        except ValueError as e:
+            allowed = [s.value for s in LRSchedule]
+            raise ValueError(
+                f"Unsupported lr_schedule: {self.lr_schedule}; must be one of {allowed}"
+            ) from e
 
         if self.warmup_steps < 0:
             raise ValueError(f"warmup_steps must be >= 0; got {self.warmup_steps}")
@@ -135,8 +154,20 @@ class TrainerConfig(BaseJsonConfig):
         if not (0.0 <= self.min_lr_ratio <= 1.0):
             raise ValueError(f"min_lr_ratio must be in [0,1]; got {self.min_lr_ratio}")
 
+        if self.lr_schedule == LRSchedule.trapezoidal:
+            if not (0.0 < self.decay_fraction <= 1.0):
+                raise ValueError(
+                    f"decay_fraction must be in (0, 1] for trapezoidal; got {self.decay_fraction}"
+                )
+            decay_steps = int(round(self.decay_fraction * self.num_steps))
+            if self.warmup_steps + decay_steps > self.num_steps:
+                raise ValueError(
+                    f"warmup_steps ({self.warmup_steps}) + decay_steps ({decay_steps}) "
+                    f"exceeds num_steps ({self.num_steps})"
+                )
+
         # If schedule is none, min_lr_ratio doesn't matter.
-        if self.lr_schedule == "none":
+        if self.lr_schedule == LRSchedule.none:
             self.min_lr_ratio = 1.0
 
     @classmethod
@@ -277,6 +308,10 @@ class Trainer:
                 step_idx=self.step_idx,
                 warmup_steps=self.cfg.warmup_steps,
                 lr_schedule=self.cfg.lr_schedule or "none",
+                weight_decay=self.cfg.weight_decay,
+                weight_decay_base_depth=self.cfg.weight_decay_base_depth,
+                using_mup=self.raw_model.cfg.using_mup,
+                mup_base_width=self.raw_model.cfg.mup_base_width,
             )
 
         # MAIN TRAINING LOOP

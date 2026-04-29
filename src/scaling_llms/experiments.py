@@ -81,14 +81,30 @@ def build_trainer(
     scaler = torch.cuda.amp.GradScaler(
         enabled=(cfg.precision == "fp16") and cfg.device.startswith("cuda")
     )
-    optimizer = make_adamw_optimizer(raw_model, cfg)
+    optimizer = make_adamw_optimizer(
+        raw_model,
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+        beta1=cfg.beta1,
+        beta2=cfg.beta2,
+        fused=cfg.fused_adamw,
+        n_layer=raw_model.cfg.n_layer,
+        weight_decay_base_depth=cfg.weight_decay_base_depth,
+    )
     # optimizer = torch.optim.AdamW(
     #     model.parameters(),
     #     lr=cfg.lr,
     #     betas=(cfg.beta1, cfg.beta2),
     #     weight_decay=cfg.weight_decay,
     # )
-    lr_scheduler = make_lr_scheduler(optimizer, cfg)
+    lr_scheduler = make_lr_scheduler(
+        optimizer,
+        lr_schedule=cfg.lr_schedule,
+        num_steps=cfg.num_steps,
+        warmup_steps=cfg.warmup_steps,
+        min_lr_ratio=cfg.min_lr_ratio,
+        decay_fraction=cfg.decay_fraction,
+    )
 
     # 5. Trainer
     return Trainer(
