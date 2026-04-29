@@ -279,15 +279,16 @@ def make_lr_scheduler(
 # TOKEN BUDGETING
 # -----------------------------
 def compute_opt_steps_from_token_budget(
-    train_tokens_budget: int, 
-    micro_batch_size: int, 
-    seq_len: int, 
-    accum_steps: int
-) -> dict[str, int]:
+    train_tokens_budget: int,
+    micro_batch_size: int,
+    seq_len: int,
+    accum_steps: int,
+    world_size: int = 1,
+) -> int:
     def _ceil_div(a: int, b: int) -> int:
         """Helper function to compute ceiling division of a by b."""
         return (a + b - 1) // b
-    
+
     # Validate inputs
     if train_tokens_budget is None:
         raise ValueError(
@@ -309,13 +310,15 @@ def compute_opt_steps_from_token_budget(
         raise ValueError(f"seq_len must be > 0; got {seq_len}")
     if accum_steps <= 0:
         raise ValueError(f"accum_steps must be > 0; got {accum_steps}")
+    if world_size <= 0:
+        raise ValueError(f"world_size must be > 0; got {world_size}")
 
-    # Compute tokens per step: micro_batch_size * seq_len * accum_steps
-    tokens_per_step = int(micro_batch_size) * int(seq_len) * int(accum_steps)
+    tokens_per_step = (
+        int(micro_batch_size) * int(seq_len) * int(accum_steps) * int(world_size)
+    )
     if tokens_per_step <= 0:
         raise ValueError(f"Invalid tokens_per_step computed: {tokens_per_step}")
 
-    # Return only the derived number of optimizer steps (int)
     return max(1, _ceil_div(int(train_tokens_budget), tokens_per_step))
 
 
