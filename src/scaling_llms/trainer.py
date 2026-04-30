@@ -19,8 +19,8 @@ from scaling_llms.distributed import (
 )
 from scaling_llms.tracking import Run
 from scaling_llms.utils.config import BaseJsonConfig
+from scaling_llms.utils.lr_schedulers import LRSchedule
 from scaling_llms.utils.training import (
-    LRSchedule,
     compute_grad_zero_frac,
     compute_grad_norm,
     compute_param_norm,
@@ -49,12 +49,7 @@ class TrainerConfig(BaseJsonConfig):
     device: str = "auto"  # requested device: "auto" | "cpu" | "cuda"
     fused_adamw: bool | None = None  # None = auto: True on CUDA, False on CPU
 
-    # accum_steps is NOT user-set: it is derived at runtime from
-    # DataLoaderConfig.train_global_batch_size + train_batch_size + world_size.
-    # Kept on TrainerConfig so Trainer can read self.cfg.accum_steps at train time.
-    accum_steps: int = field(init=False, default=1)
-
-    # Multi-GPU
+    # Runtime and Reproducibility
     use_compile: bool = False
     local_rank: int = 0  # set at runtime from LOCAL_RANK env var
     seed: int = 42
@@ -79,6 +74,12 @@ class TrainerConfig(BaseJsonConfig):
 
     # Timer
     enable_cuda_timer: bool = False
+
+    # Derived Args 
+    accum_steps: int = field(init=False, default=1)
+    ## accum_steps is derived at runtime from
+    ## DataLoaderConfig.train_global_batch_size + train_batch_size + world_size.
+    ## Kept on TrainerConfig so Trainer can read self.cfg.accum_steps at train time.
 
     # --- PRIVATE METHODS ---
     def __post_init__(self) -> None:

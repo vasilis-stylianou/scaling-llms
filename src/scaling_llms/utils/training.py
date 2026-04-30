@@ -2,9 +2,7 @@ import os
 import logging
 import math
 from contextlib import nullcontext
-from enum import StrEnum
 import torch
-from torch.optim.lr_scheduler import LambdaLR
 from scaling_llms.constants import METADATA_FILES
 from scaling_llms.tracking import Run
 from scaling_llms.utils.loggers import TrainerLogger
@@ -170,109 +168,6 @@ def make_adamw_optimizer(
         fused=fused,
     )
     return optimizer
-
-
-# -----------------------------
-# LR SCHEDULER
-# -----------------------------
-class LRSchedule(StrEnum):
-    none = "none"
-    linear = "linear"
-    cosine = "cosine"
-    trapezoidal = "trapezoidal"
-
-    
-def make_lr_scheduler(
-    optimizer,
-    lr_schedule: str | None,
-    num_steps: int,
-    warmup_steps: int = 0,
-    min_lr_ratio: float = 0.0,
-    decay_fraction: float = 0.0,
-):
-
-    if lr_schedule is None or lr_schedule == LRSchedule.none:
-        return None
-
-    try:
-        lr_schedule = LRSchedule(lr_schedule)
-    except ValueError as e:
-        allowed = [s.value for s in LRSchedule]
-        raise ValueError(
-            f"Unsupported lr_schedule: {lr_schedule}; must be one of {allowed}"
-        ) from e
-
-    warmup_steps = int(warmup_steps)
-    total_steps = int(num_steps)
-    min_lr_ratio = float(min_lr_ratio)
-
-    if total_steps <= 0:
-        raise ValueError(f"num_steps must be > 0; got {total_steps}")
-    if warmup_steps < 0:
-        raise ValueError(f"warmup_steps must be >= 0; got {warmup_steps}")
-    if warmup_steps > total_steps:
-        raise ValueError(
-            f"warmup_steps ({warmup_steps}) must be <= num_steps ({total_steps})"
-        )
-    if not (0.0 <= min_lr_ratio <= 1.0):
-        raise ValueError(f"min_lr_ratio must be in [0, 1]; got {min_lr_ratio}")
-
-    decay_steps = None
-    stable_end = None
-
-    if lr_schedule == LRSchedule.trapezoidal:
-        decay_fraction = float(decay_fraction)
-
-        if not (0.0 < decay_fraction <= 1.0):
-            raise ValueError(
-                f"decay_fraction must be in (0, 1] for trapezoidal; got {decay_fraction}"
-            )
-
-        decay_steps = int(round(decay_fraction * total_steps))
-
-        if warmup_steps + decay_steps > total_steps:
-            raise ValueError(
-                f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) "
-                f"exceeds num_steps ({total_steps})"
-            )
-
-        stable_end = total_steps - decay_steps
-
-    def warmup_multiplier(step: int) -> float:
-        if warmup_steps > 0 and step < warmup_steps:
-            return float(step + 1) / float(warmup_steps)
-        return 1.0
-
-    def decay_progress(step: int, start_step: int, num_decay_steps: int) -> float:
-        progress = float(step - start_step + 1) / float(max(1, num_decay_steps))
-        return min(max(progress, 0.0), 1.0)
-
-    def lr_lambda(step: int):
-        if warmup_steps > 0 and step < warmup_steps:
-            return warmup_multiplier(step)
-
-        if lr_schedule == LRSchedule.trapezoidal:
-            assert stable_end is not None
-            assert decay_steps is not None
-
-            if step < stable_end:
-                return 1.0
-
-            progress = decay_progress(step, stable_end, decay_steps)
-            return min_lr_ratio + (1.0 - min_lr_ratio) * (1.0 - progress)
-
-        denom = max(1, total_steps - warmup_steps)
-        progress = float(step - warmup_steps + 1) / float(denom)
-        progress = min(max(progress, 0.0), 1.0)
-
-        if lr_schedule == LRSchedule.cosine:
-            return min_lr_ratio + 0.5 * (1.0 - min_lr_ratio) * (
-                1.0 + math.cos(math.pi * progress)
-            )
-
-        return min_lr_ratio + (1.0 - min_lr_ratio) * (1.0 - progress)
-
-    return LambdaLR(optimizer, lr_lambda)
 
 
 # -----------------------------

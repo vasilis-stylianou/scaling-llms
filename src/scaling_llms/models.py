@@ -398,7 +398,7 @@ class Block(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         
-        # 1. Norms (Pre-Norm architecture)
+        # 1. Norms 
         self.norm1 = make_norm(cfg)
         self.norm2 = make_norm(cfg)
         
@@ -408,7 +408,7 @@ class Block(nn.Module):
        
     def forward(self, x):
         # Weighted sum (Communication)
-        # Note the Pre-Norm placement: attn(norm1(x))
+        # Note the Pre-Norm placement
         x = x + self.attn(self.norm1(x))
         
         # Element-wise processing (Computation)
@@ -438,12 +438,11 @@ class GPTModel(nn.Module):
         if cfg.pos_encoding_type == "absolute":
             transformer_dict["wpe"] = nn.Embedding(cfg.seq_len, cfg.n_embd)
 
-        ## A.2. The Stack (Dropout usually applied after embedding sum)
         if cfg.embd_norm:
             transformer_dict["norm_e"] = make_norm(cfg)
         transformer_dict["embd_drop"] = nn.Dropout(cfg.embd_pdrop)
 
-        ## A.3. The Layers (ModuleList allows standard iteration)
+        ## A.2. Transformer blocks
         transformer_dict["h"] = nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)])
 
         ## A.4. Final Norm
@@ -462,8 +461,8 @@ class GPTModel(nn.Module):
             self.lm_head.weight = self.transformer.wte.weight
 
         # E. Residual projection scaling (both SP and μP)
-        ## Scale c_proj layers (attn output + MLP down-proj) by 1/sqrt(2*L)
-        ## to prevent residual stream variance from growing with depth.
+        ## Scale residual branch output projections (c_proj) by 1/sqrt(2*L)
+        ## to help control residual stream variance from growing with depth.
         for name, p in self.named_parameters():
             if name.endswith("c_proj.weight"):
                 p.data.mul_((2 * cfg.n_layer) ** -0.5)

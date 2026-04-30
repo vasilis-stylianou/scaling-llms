@@ -27,7 +27,8 @@ from scaling_llms.registries import (
 from scaling_llms.tracking.run import Run
 from scaling_llms.trainer import Trainer, TrainerConfig
 from scaling_llms.utils.io import load_module_from_path
-from scaling_llms.utils.training import make_adamw_optimizer, make_lr_scheduler, set_determinism
+from scaling_llms.utils.lr_schedulers import make_lr_scheduler
+from scaling_llms.utils.training import make_adamw_optimizer, set_determinism
 
 # =============================================================================
 # Shared functions
